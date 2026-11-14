@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="./favicon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>人情录</title>
+    <script>
+      /*
+       * 前端静态托管在 GitHub Pages，后端 API 部署在 Cloudflare Workers。
+       * 这里统一处理：
+       *   1. 把前端发出的相对路径 api/... 重写到 Worker 域名；
+       *   2. 为每个浏览器生成一个匿名设备标识（localStorage），并用 X-Ledger-Token 头传递，
+       *      使每个浏览器的账本相互独立（与原应用“每人独立账本”的设计一致）。
+       */
+      (function () {
+        var API_BASE = "https://api.rq.fuxicun.top";
+
+        function newToken() {
+          try {
+            if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+          } catch (e) {}
+          var s = "";
+          for (var i = 0; i < 32; i++) s += Math.floor(Math.random() * 16).toString(16);
+          return (
+            s.slice(0, 8) + "-" + s.slice(8, 12) + "-" + s.slice(12, 16) + "-" +
+            s.slice(16, 20) + "-" + s.slice(20, 32)
+          );
+        }
+
+        function getToken() {
+          var stores = [];
+          try { stores.push(window.localStorage); } catch (e) {}
+          try { stores.push(window.sessionStorage); } catch (e) {}
+          for (var i = 0; i < stores.length; i++) {
+            try {
+              var t = stores[i].getItem("ledger_device_token");
+              if (t) return t;
+              t = newToken();
+              stores[i].setItem("ledger_device_token", t);
+              return t;
+            } catch (e) {}
+          }
+          return window.__ledgerMemoryToken || (window.__ledgerMemoryToken = newToken());
+        }
+
+        var originalFetch = window.fetch ? window.fetch.bind(window) : null;
+        if (!originalFetch) return;
+
+        window.fetch = function (input, init) {
+          var url = typeof input === "string" ? input : input && input.url ? input.url : String(input);
+          var nextInput = input;
+          if (/^(\.?\/?api\/)/.test(url)) {
+            nextInput = API_BASE + "/api/" + url.replace(/^\.?\/?api\//, "");
+          }
+          var nextInit = {};
+          if (init) {
+            for (var k in init) if (Object.prototype.hasOwnProperty.call(init, k)) nextInit[k] = init[k];
+          }
+          try {
+            var baseHeaders = init && init.headers ? init.headers : input instanceof Request ? input.headers : undefined;
+            var headers = new Headers(baseHeaders || undefined);
+            headers.set("X-Ledger-Token", getToken());
+            nextInit.headers = headers;
+          } catch (e) {}
+          return originalFetch(nextInput, nextInit);
+        };
+      })();
+    </script>
+    <script type="module" crossorigin src="./assets/index-CHaro1Qz.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-0wU_Pyvo.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
