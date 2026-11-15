@@ -30,6 +30,7 @@ const METHODS = new Set(['cash', 'wechat', 'alipay', 'other']);
 
 const ALLOWED_ORIGINS = new Set([
   'https://rq.fuxicun.top',
+  'http://rq.fuxicun.top',
   'https://zhoudedi.github.io',
 ]);
 
@@ -648,7 +649,8 @@ function b64decode(text) {
 }
 
 async function importBackupKey(env) {
-  const secret = env.BACKUP_SECRET || 'xiaozhou-ledger-default-backup-key';
+  const secret = env.BACKUP_SECRET;
+  if (!secret) throw new Error('服务端未配置备份密钥 BACKUP_SECRET');
   const digest = await crypto.subtle.digest(
     'SHA-256',
     new TextEncoder().encode(`xiaozhou-ledger-backup-v1:${secret}`)
