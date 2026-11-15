@@ -52,10 +52,10 @@ cd worker
 npm install
 
 # 创建 D1 数据库（若已有可跳过），把返回的 database_id 填入 wrangler.toml
-npx wrangler d1 create xiaozhou-ledger
+npx wrangler d1 create xiaozhou-ledger-web
 
 # 初始化表结构
-npx wrangler d1 execute xiaozhou-ledger --remote --file=schema.sql
+npx wrangler d1 execute xiaozhou-ledger-web --remote --file=schema.sql
 
 # 设置备份加密密钥
 npx wrangler secret put BACKUP_SECRET
