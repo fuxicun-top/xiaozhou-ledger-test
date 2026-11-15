@@ -42,8 +42,9 @@ Cloudflare D1（SQLite）
 
 1. 将本仓库推送到 GitHub。
 2. 仓库 **Settings → Pages**：Source 选择 `Deploy from a branch`，Branch 选 `main`，目录选 `/docs`。
-3. 在 Cloudflare DNS 中添加记录：`rq` CNAME → `<你的 GitHub 用户名>.github.io`（DNS only）。
-4. 在 Pages 设置中把 Custom domain 设为 `rq.fuxicun.top` 并启用 HTTPS（`docs/CNAME` 已包含域名）。
+3. 在 Pages 设置中把 Custom domain 设为 `rq.fuxicun.top`（`docs/CNAME` 已包含域名）。
+4. 在 Cloudflare DNS 中添加记录：`rq` CNAME → `<你的 GitHub 用户名>.github.io`。
+   - 若 GitHub 自动签发 HTTPS 证书较慢，可将该记录设为 **已代理**（橙色云朵），由 Cloudflare 提供边缘证书，并添加一条仅针对 `rq.fuxicun.top` 的「强制 HTTPS」重定向规则。本部署即采用此方式：Cloudflare 边缘证书 + 源站 GitHub Pages，HTTP 自动 301 到 HTTPS。
 
 ### 2. 后端（Cloudflare Worker + D1）
 
@@ -64,9 +65,12 @@ npx wrangler secret put BACKUP_SECRET
 npx wrangler deploy
 ```
 
-然后在 Cloudflare 控制台为 Worker 添加自定义域名（如 `rqapi.fuxicun.top`）
-（Workers & Pages → xiaozhou-ledger-api → Settings → Domains & Routes → Add custom domain），
-并在 `docs/index.html` 中修改 `API_BASE`，以及在 `worker/src/index.js` 的 `ALLOWED_ORIGINS` 中加入你的前端域名。
+为 Worker 绑定 API 域名，任选其一：
+
+- **Workers 路由**（本部署采用）：DNS 添加 `rqapi` A 记录（内容可填占位地址如 `192.0.2.1`）并开启代理，然后在 Workers & Pages → xiaozhou-ledger-api → Settings → Triggers → Routes 添加 `rqapi.fuxicun.top/*`。
+- **自定义域名**：Workers & Pages → xiaozhou-ledger-api → Settings → Domains & Routes → Add custom domain。
+
+最后修改 `docs/index.html` 中的 `API_BASE`（本仓库为 `https://rqapi.fuxicun.top`），并在 `worker/src/index.js` 的 `ALLOWED_ORIGINS` 中加入你的前端域名。
 
 ## API
 
