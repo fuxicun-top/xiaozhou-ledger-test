@@ -12,3 +12,7 @@ node_modules/
 worker/.probe_*.json
 worker/deployed.js
 *.probe*.json
+_cleanup.sql
+probe-*.js
+*.probe*.json
+deployed.js

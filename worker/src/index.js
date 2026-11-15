@@ -576,12 +576,15 @@ async function handleOverview(env, deviceId, origin) {
 }
 
 async function handlePeople(env, deviceId, origin) {
-  const { results } = await env.DB.prepare(
-    `SELECT ${GIFT_COLUMNS} FROM gifts WHERE device_id = ?`
-  )
-    .bind(deviceId)
-    .all();
-  return jsonRes(buildPersonSummaries(results || []), 200, origin);
+  const [giftsRes, eventsRes] = await Promise.all([
+    env.DB.prepare(`SELECT ${GIFT_COLUMNS} FROM gifts WHERE device_id = ?`)
+      .bind(deviceId)
+      .all(),
+    env.DB.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE device_id = ?`)
+      .bind(deviceId)
+      .all(),
+  ]);
+  return jsonRes(buildPersonSummaries(giftsRes.results || [], eventsRes.results || []), 200, origin);
 }
 
 async function handleYearlyReport(request, env, deviceId, origin) {
