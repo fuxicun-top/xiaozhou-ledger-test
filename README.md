@@ -2,7 +2,7 @@
 
 > 将飞牛OS 应用「人情录」的前端静态资源部署到 **GitHub Pages**，后端使用 **Cloudflare Workers + D1** 重新实现。
 >
-> 在线地址：<https://rq.fuxicun.top> ｜ API：`https://api.rq.fuxicun.top`
+> 在线地址：<https://rq.fuxicun.top> ｜ API：`https://rqapi.fuxicun.top`
 
 ## 架构
 
@@ -10,7 +10,7 @@
 浏览器（React SPA，托管于 GitHub Pages / rq.fuxicun.top）
         │  fetch api/...  +  X-Ledger-Token
         ▼
-Cloudflare Worker（xiaozhou-ledger-api / api.rq.fuxicun.top）
+Cloudflare Worker（xiaozhou-ledger-api / rqapi.fuxicun.top）
         │
         ▼
 Cloudflare D1（SQLite）
@@ -64,7 +64,7 @@ npx wrangler secret put BACKUP_SECRET
 npx wrangler deploy
 ```
 
-然后在 Cloudflare 控制台为 Worker 添加自定义域名 `api.rq.fuxicun.top`
+然后在 Cloudflare 控制台为 Worker 添加自定义域名（如 `rqapi.fuxicun.top`）
 （Workers & Pages → xiaozhou-ledger-api → Settings → Domains & Routes → Add custom domain），
 并在 `docs/index.html` 中修改 `API_BASE`，以及在 `worker/src/index.js` 的 `ALLOWED_ORIGINS` 中加入你的前端域名。
 
