@@ -1543,7 +1543,16 @@ export default {
 
     try {
       if (path === '/api/health' && request.method === 'GET') {
-        return jsonRes({ ok: true, service: 'xiaozhou-ledger-web', time: nowIso() }, 200, origin);
+        return jsonRes(
+          {
+            ok: true,
+            service: 'xiaozhou-ledger-web',
+            build: 'builds-verify-2026-11-15',
+            time: nowIso(),
+          },
+          200,
+          origin
+        );
       }
 
       // ---- 账号管理（无需已有身份）----
