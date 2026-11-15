@@ -25,13 +25,19 @@ const EVENT_LABELS = {
   other: '其他',
 };
 
+const METHOD_LABELS = {
+  cash: '现金',
+  wechat: '微信',
+  alipay: '支付宝',
+  other: '其他',
+};
+
 const RELATIONS = new Set(['朋友', '亲戚', '同事', '同学', '邻居', '其他']);
 const METHODS = new Set(['cash', 'wechat', 'alipay', 'other']);
 
 const ALLOWED_ORIGINS = new Set([
   'https://rq.fuxicun.top',
   'http://rq.fuxicun.top',
-  'https://zhoudedi.github.io',
 ]);
 
 /* ------------------------------------------------------------------ */
@@ -41,7 +47,7 @@ const ALLOWED_ORIGINS = new Set([
 function corsHeaders(origin) {
   const headers = {
     'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type,X-Ledger-Token',
+    'Access-Control-Allow-Headers': 'Content-Type,X-Ledger-Token,X-Api-Key,Authorization',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
   };
@@ -93,10 +99,33 @@ async function readJson(request) {
   }
 }
 
-function getDeviceId(request) {
+function getBearerToken(request) {
+  const auth = (request.headers.get('Authorization') || '').trim();
+  const match = /^Bearer\s+(.+)$/i.exec(auth);
+  return match ? match[1].trim() : '';
+}
+
+/**
+ * 设备身份解析：
+ *  - 浏览器端使用 X-Ledger-Token（localStorage 中的匿名设备标识）；
+ *  - 小程序/第三方客户端使用接口密钥（X-Api-Key 或 Authorization: Bearer）。
+ */
+async function resolveDeviceId(request, env) {
   const token = (request.headers.get('X-Ledger-Token') || '').trim();
-  if (!/^[A-Za-z0-9_-]{16,64}$/.test(token)) return null;
-  return token;
+  if (/^[A-Za-z0-9_-]{16,64}$/.test(token)) return token;
+
+  const apiKey =
+    (request.headers.get('X-Api-Key') || request.headers.get('X-Token') || '').trim() ||
+    getBearerToken(request);
+  if (apiKey) {
+    const row = await env.DB.prepare(
+      'SELECT device_id FROM device_settings WHERE api_key = ? LIMIT 1'
+    )
+      .bind(apiKey)
+      .first();
+    if (row && row.device_id) return row.device_id;
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -354,6 +383,338 @@ async function handleGiftsDelete(env, deviceId, giftId, origin) {
   return jsonRes({ deleted: true }, 200, origin);
 }
 
+async function handleGiftGet(env, deviceId, giftId, origin) {
+  const gift = await env.DB.prepare(
+    `SELECT ${GIFT_COLUMNS} FROM gifts WHERE id = ? AND device_id = ?`
+  )
+    .bind(giftId, deviceId)
+    .first();
+  if (!gift) return fail('记录不存在', 404, origin);
+  return jsonRes(gift, 200, origin);
+}
+
+async function handleEventUpdate(request, env, deviceId, eventId, origin) {
+  const body = await readJson(request);
+  if (!body) return fail('请求内容格式错误', 400, origin);
+  const type = EVENT_TYPES.has(body.type) ? body.type : null;
+  const date = isValidDate(body.date) ? body.date : null;
+  if (!type) return fail('活动类型不正确', 400, origin);
+  if (!date) return fail('活动日期格式需为 YYYY-MM-DD', 400, origin);
+  const name = asString(body.name, 60).trim() || EVENT_LABELS[type];
+
+  const clash = await env.DB.prepare(
+    'SELECT id FROM events WHERE device_id = ? AND type = ? AND date = ? AND id <> ? LIMIT 1'
+  )
+    .bind(deviceId, type, date, eventId)
+    .first();
+  if (clash) return fail('已存在相同类型与日期的活动', 400, origin);
+
+  const result = await env.DB.prepare(
+    'UPDATE events SET name = ?, type = ?, date = ? WHERE id = ? AND device_id = ?'
+  )
+    .bind(name, type, date, eventId, deviceId)
+    .run();
+  if (!result.meta || result.meta.changes === 0) {
+    return fail('活动不存在', 404, origin);
+  }
+  const event = await env.DB.prepare(
+    `SELECT ${EVENT_COLUMNS} FROM events WHERE id = ? AND device_id = ?`
+  )
+    .bind(eventId, deviceId)
+    .first();
+  return jsonRes(event, 200, origin);
+}
+
+async function handleEventDelete(env, deviceId, eventId, origin) {
+  const gifts = await env.DB.prepare(
+    'DELETE FROM gifts WHERE event_id = ? AND device_id = ?'
+  )
+    .bind(eventId, deviceId)
+    .run();
+  const events = await env.DB.prepare(
+    'DELETE FROM events WHERE id = ? AND device_id = ?'
+  )
+    .bind(eventId, deviceId)
+    .run();
+  if (!events.meta || events.meta.changes === 0) {
+    return fail('活动不存在', 404, origin);
+  }
+  return jsonRes(
+    { deleted: true, deletedGifts: (gifts.meta && gifts.meta.changes) || 0 },
+    200,
+    origin
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 统计 / 联系人 / 年度报告 / CSV（小程序与第三方客户端兼容接口）        */
+/* ------------------------------------------------------------------ */
+
+function buildPersonSummaries(gifts) {
+  const map = new Map();
+  for (const g of gifts) {
+    const key = g.person;
+    let p = map.get(key);
+    if (!p) {
+      p = {
+        person: g.person,
+        relation: g.relation || '',
+        totalInFen: 0,
+        totalOutFen: 0,
+        giftCount: 0,
+        inCount: 0,
+        outCount: 0,
+        firstDate: g.date,
+        lastDate: g.date,
+        maxIn: 0,
+        maxOut: 0,
+      };
+      map.set(key, p);
+    }
+    p.giftCount++;
+    if (g.direction === 'in') {
+      p.totalInFen += g.amountFen;
+      p.inCount++;
+      p.maxIn = Math.max(p.maxIn, g.amountFen);
+    } else {
+      p.totalOutFen += g.amountFen;
+      p.outCount++;
+      p.maxOut = Math.max(p.maxOut, g.amountFen);
+    }
+    if (g.date < p.firstDate) p.firstDate = g.date;
+    if (g.date > p.lastDate) p.lastDate = g.date;
+  }
+  const list = [...map.values()].map((p) => ({
+    ...p,
+    inFen: p.totalInFen,
+    outFen: p.totalOutFen,
+    netFen: p.totalInFen - p.totalOutFen,
+    count: p.giftCount,
+  }));
+  list.sort(
+    (a, b) => b.totalInFen + b.totalOutFen - (a.totalInFen + a.totalOutFen)
+  );
+  return list;
+}
+
+async function handleOverview(env, deviceId, origin) {
+  const [eventsRes, giftsRes] = await Promise.all([
+    env.DB.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE device_id = ?`)
+      .bind(deviceId)
+      .all(),
+    env.DB.prepare(`SELECT ${GIFT_COLUMNS} FROM gifts WHERE device_id = ?`)
+      .bind(deviceId)
+      .all(),
+  ]);
+  const events = eventsRes.results || [];
+  const gifts = giftsRes.results || [];
+  const year = new Date().toISOString().slice(0, 4);
+
+  let totalInFen = 0;
+  let totalOutFen = 0;
+  let yearInFen = 0;
+  let yearOutFen = 0;
+  let maxIn = 0;
+  let maxOut = 0;
+  let firstDate = '';
+  for (const g of gifts) {
+    if (g.direction === 'in') {
+      totalInFen += g.amountFen;
+      if (g.date.startsWith(year)) yearInFen += g.amountFen;
+      maxIn = Math.max(maxIn, g.amountFen);
+    } else {
+      totalOutFen += g.amountFen;
+      if (g.date.startsWith(year)) yearOutFen += g.amountFen;
+      maxOut = Math.max(maxOut, g.amountFen);
+    }
+    if (!firstDate || g.date < firstDate) firstDate = g.date;
+  }
+  const people = buildPersonSummaries(gifts);
+
+  return jsonRes(
+    {
+      eventCount: events.length,
+      giftCount: gifts.length,
+      totalInFen,
+      totalOutFen,
+      netFen: totalInFen - totalOutFen,
+      yearInFen,
+      yearOutFen,
+      personCount: people.length,
+      topPersons: people.slice(0, 5),
+      maxIn,
+      maxOut,
+      firstDate,
+    },
+    200,
+    origin
+  );
+}
+
+async function handlePeople(env, deviceId, origin) {
+  const { results } = await env.DB.prepare(
+    `SELECT ${GIFT_COLUMNS} FROM gifts WHERE device_id = ?`
+  )
+    .bind(deviceId)
+    .all();
+  return jsonRes(buildPersonSummaries(results || []), 200, origin);
+}
+
+async function handleYearlyReport(request, env, deviceId, origin) {
+  const url = new URL(request.url);
+  const nowYear = String(new Date().getFullYear());
+  const rawYear = url.searchParams.get('year') || '';
+  const year = /^\d{4}$/.test(rawYear) ? rawYear : nowYear;
+
+  const [eventsRes, giftsRes] = await Promise.all([
+    env.DB.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE device_id = ?`)
+      .bind(deviceId)
+      .all(),
+    env.DB.prepare(`SELECT ${GIFT_COLUMNS} FROM gifts WHERE device_id = ? ORDER BY date DESC, created_at DESC`)
+      .bind(deviceId)
+      .all(),
+  ]);
+  const events = eventsRes.results || [];
+  const gifts = giftsRes.results || [];
+  const eventType = new Map(events.map((e) => [e.id, e.type]));
+  const years = [...new Set(gifts.map((g) => g.date.slice(0, 4)))]
+    .sort()
+    .reverse();
+  const yearGifts = gifts.filter((g) => g.date.startsWith(year));
+
+  const byTypeMap = new Map();
+  const byMonthMap = new Map();
+  let totalInFen = 0;
+  let totalOutFen = 0;
+
+  for (const g of yearGifts) {
+    const type = eventType.get(g.eventId) || 'other';
+    let t = byTypeMap.get(type);
+    if (!t) {
+      t = { type, inFen: 0, outFen: 0, count: 0 };
+      byTypeMap.set(type, t);
+    }
+    const month = g.date.slice(0, 7);
+    let m = byMonthMap.get(month);
+    if (!m) {
+      m = { month, inFen: 0, outFen: 0, count: 0 };
+      byMonthMap.set(month, m);
+    }
+    if (g.direction === 'in') {
+      totalInFen += g.amountFen;
+      t.inFen += g.amountFen;
+      m.inFen += g.amountFen;
+    } else {
+      totalOutFen += g.amountFen;
+      t.outFen += g.amountFen;
+      m.outFen += g.amountFen;
+    }
+    t.count++;
+    m.count++;
+  }
+
+  const byType = [...byTypeMap.values()].map((t) => ({
+    ...t,
+    netFen: t.inFen - t.outFen,
+    label: EVENT_LABELS[t.type] || t.type,
+  }));
+  const byMonth = [...byMonthMap.values()]
+    .map((m) => ({ ...m, netFen: m.inFen - m.outFen }))
+    .sort((a, b) => a.month.localeCompare(b.month));
+
+  return jsonRes(
+    {
+      year: Number(year),
+      totalInFen,
+      totalOutFen,
+      netFen: totalInFen - totalOutFen,
+      count: yearGifts.length,
+      byType,
+      byMonth,
+      topPersons: buildPersonSummaries(yearGifts).slice(0, 5),
+      recent: yearGifts.slice(0, 10),
+      years,
+    },
+    200,
+    origin
+  );
+}
+
+function csvEscape(value) {
+  const text = String(value === null || value === undefined ? '' : value);
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+async function handleExportCsv(request, env, deviceId, origin) {
+  const url = new URL(request.url);
+  const kind = url.searchParams.get('type') || url.searchParams.get('kind') || 'gifts';
+
+  const [eventsRes, giftsRes] = await Promise.all([
+    env.DB.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE device_id = ? ORDER BY date DESC`)
+      .bind(deviceId)
+      .all(),
+    env.DB.prepare(`SELECT ${GIFT_COLUMNS} FROM gifts WHERE device_id = ? ORDER BY date DESC, created_at DESC`)
+      .bind(deviceId)
+      .all(),
+  ]);
+  const events = eventsRes.results || [];
+  const gifts = giftsRes.results || [];
+  const eventById = new Map(events.map((e) => [e.id, e]));
+
+  const rows = [];
+  let filename = '礼金明细.csv';
+
+  if (kind === 'events') {
+    filename = '活动列表.csv';
+    rows.push(['名称', '类型', '日期', '笔数']);
+    for (const e of events) {
+      const count = gifts.filter((g) => g.eventId === e.id).length;
+      rows.push([e.name, EVENT_LABELS[e.type] || e.type, e.date, count]);
+    }
+  } else if (kind === 'people') {
+    filename = '人情往来.csv';
+    rows.push(['姓名', '关系', '收礼(元)', '随礼(元)', '结余(元)', '笔数', '最近日期']);
+    for (const p of buildPersonSummaries(gifts)) {
+      rows.push([
+        p.person,
+        p.relation,
+        (p.totalInFen / 100).toFixed(2),
+        (p.totalOutFen / 100).toFixed(2),
+        (p.netFen / 100).toFixed(2),
+        p.giftCount,
+        p.lastDate,
+      ]);
+    }
+  } else {
+    rows.push(['日期', '姓名', '关系', '方向', '活动', '方式', '金额(元)', '备注']);
+    for (const g of gifts) {
+      const event = eventById.get(g.eventId);
+      rows.push([
+        g.date,
+        g.person,
+        g.relation,
+        g.direction === 'in' ? '收礼' : '随礼',
+        event ? event.name : '',
+        METHOD_LABELS[g.method] || g.method,
+        (g.amountFen / 100).toFixed(2),
+        g.note,
+      ]);
+    }
+  }
+
+  const csv = '\ufeff' + rows.map((row) => row.map(csvEscape).join(',')).join('\r\n');
+  const disposition = `attachment; filename="export-${kind}.csv"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+  return new Response(csv, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': disposition,
+      'Cache-Control': 'no-store',
+      ...corsHeaders(origin),
+    },
+  });
+}
+
 /* ------------------------------------------------------------------ */
 /* AI 模型                                                             */
 /* ------------------------------------------------------------------ */
@@ -569,9 +930,12 @@ async function sha256Hex(text) {
 
 async function handleApiKeyGet(env, deviceId, origin) {
   const s = await getSettings(env, deviceId);
+  const key = (s && s.api_key) || '';
   return jsonRes(
     {
-      configured: Boolean(s && s.api_key_hash),
+      configured: Boolean(key),
+      // 原应用的「绑定二维码」会用这里的 key 生成配置码，因此需要返回明文。
+      key,
       apiPort: (s && s.api_port) || 0,
       createdAt: (s && s.api_key_created_at) || '',
     },
@@ -585,10 +949,10 @@ async function handleApiKeyRotate(env, deviceId, origin) {
   const key = `gl_${[...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
   const hash = await sha256Hex(key);
   await env.DB.prepare(
-    `UPDATE device_settings SET api_key_hash = ?, api_key_created_at = ?
+    `UPDATE device_settings SET api_key = ?, api_key_hash = ?, api_key_created_at = ?
      WHERE device_id = ?`
   )
-    .bind(hash, nowIso(), deviceId)
+    .bind(key, hash, nowIso(), deviceId)
     .run();
   return jsonRes({ key }, 200, origin);
 }
@@ -900,6 +1264,12 @@ export default {
 
     const path = url.pathname.replace(/\/+$/, '') || '/';
 
+    // 非 /api/* 的请求由静态资源（Worker Assets）处理；这里做兜底。
+    if (!url.pathname.startsWith('/api/')) {
+      if (env.ASSETS) return env.ASSETS.fetch(request);
+      return fail('页面不存在', 404, origin);
+    }
+
     try {
       if (path === '/api/health' && request.method === 'GET') {
         return jsonRes(
@@ -909,9 +1279,9 @@ export default {
         );
       }
 
-      const deviceId = getDeviceId(request);
+      const deviceId = await resolveDeviceId(request, env);
       if (!deviceId) {
-        return fail('缺少设备身份，请刷新页面后重试', 401, origin);
+        return fail('缺少设备身份或接口密钥无效', 401, origin);
       }
       await ensureDevice(env, deviceId);
 
@@ -924,6 +1294,14 @@ export default {
         if (request.method === 'POST') return handleEventsCreate(request, env, deviceId, origin);
       }
 
+      if (path.startsWith('/api/events/')) {
+        const eventId = decodeURIComponent(path.slice('/api/events/'.length));
+        if (eventId) {
+          if (request.method === 'POST') return handleEventUpdate(request, env, deviceId, eventId, origin);
+          if (request.method === 'DELETE') return handleEventDelete(env, deviceId, eventId, origin);
+        }
+      }
+
       if (path === '/api/gifts') {
         if (request.method === 'GET') return handleGiftsGet(request, env, deviceId, origin);
         if (request.method === 'POST') return handleGiftsCreate(request, env, deviceId, origin);
@@ -932,9 +1310,23 @@ export default {
       if (path.startsWith('/api/gifts/')) {
         const giftId = decodeURIComponent(path.slice('/api/gifts/'.length));
         if (giftId) {
+          if (request.method === 'GET') return handleGiftGet(env, deviceId, giftId, origin);
           if (request.method === 'PUT') return handleGiftsUpdate(request, env, deviceId, giftId, origin);
           if (request.method === 'DELETE') return handleGiftsDelete(env, deviceId, giftId, origin);
         }
+      }
+
+      if (path === '/api/overview' && request.method === 'GET') {
+        return handleOverview(env, deviceId, origin);
+      }
+      if (path === '/api/people' && request.method === 'GET') {
+        return handlePeople(env, deviceId, origin);
+      }
+      if (path === '/api/report/yearly' && request.method === 'GET') {
+        return handleYearlyReport(request, env, deviceId, origin);
+      }
+      if (path === '/api/export/csv' && request.method === 'GET') {
+        return handleExportCsv(request, env, deviceId, origin);
       }
 
       if (path === '/api/ai/config') {

@@ -7,14 +7,14 @@
     <title>人情录</title>
     <script>
       /*
-       * 前端静态托管在 GitHub Pages，后端 API 部署在 Cloudflare Workers。
+       * 前端由 Cloudflare Worker 直接托管（单域名），GitHub 仅托管代码。
        * 这里统一处理：
-       *   1. 把前端发出的相对路径 api/... 重写到 Worker 域名；
+       *   1. 把前端发出的相对路径 api/... 规范为同源 /api/...；
        *   2. 为每个浏览器生成一个匿名设备标识（localStorage），并用 X-Ledger-Token 头传递，
        *      使每个浏览器的账本相互独立（与原应用“每人独立账本”的设计一致）。
        */
       (function () {
-        var API_BASE = "https://rqapi.fuxicun.top";
+        var API_BASE = "";
 
         function newToken() {
           try {

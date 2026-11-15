@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS device_settings (
   ai_api_key TEXT NOT NULL DEFAULT '',
   ai_model TEXT NOT NULL DEFAULT '',
   api_port INTEGER NOT NULL DEFAULT 0,
+  api_key TEXT NOT NULL DEFAULT '',
   api_key_hash TEXT NOT NULL DEFAULT '',
   api_key_created_at TEXT NOT NULL DEFAULT ''
 );
