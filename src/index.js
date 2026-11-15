@@ -1547,7 +1547,6 @@ export default {
           {
             ok: true,
             service: 'xiaozhou-ledger-web',
-            build: 'builds-verify-2026-11-15',
             time: nowIso(),
           },
           200,
