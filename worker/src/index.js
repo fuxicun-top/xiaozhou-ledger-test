@@ -359,7 +359,8 @@ async function handleGiftsDelete(env, deviceId, giftId, origin) {
 /* ------------------------------------------------------------------ */
 
 function chatEndpoint(baseUrl) {
-  return `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  const base = baseUrl.replace(/\/+$/, '');
+  return base.endsWith('/chat/completions') ? base : `${base}/chat/completions`;
 }
 
 async function callChat(baseUrl, apiKey, model, messages, maxTokens) {
@@ -533,10 +534,14 @@ async function handleAiParse(request, env, deviceId, origin) {
   );
   if (!result.ok) return fail(result.error, 502, origin);
 
-  const content = result.data && result.data.choices && result.data.choices[0]
-    && result.data.choices[0].message
-    ? result.data.choices[0].message.content
-    : '';
+  const choice = result.data && result.data.choices && result.data.choices[0];
+  let content = choice && choice.message ? choice.message.content : '';
+  if (Array.isArray(content)) {
+    content = content
+      .map((part) => (typeof part === 'string' ? part : (part && part.text) || ''))
+      .join('');
+  }
+  if (!content && choice && typeof choice.text === 'string') content = choice.text;
   if (!content) return fail('AI 未返回解析结果', 502, origin);
 
   let parsed;
