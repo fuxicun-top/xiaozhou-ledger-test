@@ -151,8 +151,9 @@ async function getSettings(env, deviceId) {
     .first();
 }
 
-const GIFT_COLUMNS = `id, event_id AS eventId, person, relation, direction,
-  amount_fen AS amountFen, method, date, note, created_at AS createdAt`;
+const GIFT_COLUMNS = `gifts.id, gifts.event_id AS eventId, gifts.person, gifts.relation, gifts.direction,
+  COALESCE((SELECT e2.type FROM events e2 WHERE e2.id = gifts.event_id AND e2.device_id = gifts.device_id), 'other') AS eventType,
+  gifts.amount_fen AS amountFen, gifts.method, gifts.date, gifts.note, gifts.created_at AS createdAt`;
 
 const EVENT_COLUMNS = `id, name, type, date, created_at AS createdAt`;
 
@@ -450,7 +451,10 @@ async function handleEventDelete(env, deviceId, eventId, origin) {
 /* 统计 / 联系人 / 年度报告 / CSV（小程序与第三方客户端兼容接口）        */
 /* ------------------------------------------------------------------ */
 
-function buildPersonSummaries(gifts) {
+function buildPersonSummaries(gifts, events) {
+  const eventById = new Map(
+    (events || []).map((e) => [e.id, e])
+  );
   const map = new Map();
   for (const g of gifts) {
     const key = g.person;
@@ -461,6 +465,8 @@ function buildPersonSummaries(gifts) {
         relation: g.relation || '',
         totalInFen: 0,
         totalOutFen: 0,
+        inFen: 0,
+        outFen: 0,
         giftCount: 0,
         inCount: 0,
         outCount: 0,
@@ -468,6 +474,7 @@ function buildPersonSummaries(gifts) {
         lastDate: g.date,
         maxIn: 0,
         maxOut: 0,
+        events: new Set(),
       };
       map.set(key, p);
     }
@@ -483,17 +490,34 @@ function buildPersonSummaries(gifts) {
     }
     if (g.date < p.firstDate) p.firstDate = g.date;
     if (g.date > p.lastDate) p.lastDate = g.date;
+    const ev = eventById.get(g.eventId);
+    if (ev && ev.name) p.events.add(ev.name);
   }
-  const list = [...map.values()].map((p) => ({
-    ...p,
-    inFen: p.totalInFen,
-    outFen: p.totalOutFen,
-    netFen: p.totalInFen - p.totalOutFen,
-    count: p.giftCount,
-  }));
-  list.sort(
-    (a, b) => b.totalInFen + b.totalOutFen - (a.totalInFen + a.totalOutFen)
-  );
+  const list = [...map.values()].map((p) => {
+    const totalFen = p.totalInFen + p.totalOutFen;
+    return {
+      person: p.person,
+      relation: p.relation,
+      // 原后端字段（YearPersonItem / PersonSummary）
+      events: [...p.events],
+      lastDate: p.lastDate,
+      totalFen,
+      // 网页端使用的别名
+      totalInFen: p.totalInFen,
+      totalOutFen: p.totalOutFen,
+      inFen: p.totalInFen,
+      outFen: p.totalOutFen,
+      netFen: p.totalInFen - p.totalOutFen,
+      count: p.giftCount,
+      giftCount: p.giftCount,
+      inCount: p.inCount,
+      outCount: p.outCount,
+      firstDate: p.firstDate,
+      maxIn: p.maxIn,
+      maxOut: p.maxOut,
+    };
+  });
+  list.sort((a, b) => b.totalFen - a.totalFen);
   return list;
 }
 
@@ -529,7 +553,7 @@ async function handleOverview(env, deviceId, origin) {
     }
     if (!firstDate || g.date < firstDate) firstDate = g.date;
   }
-  const people = buildPersonSummaries(gifts);
+  const people = buildPersonSummaries(gifts, events);
 
   return jsonRes(
     {
@@ -613,27 +637,45 @@ async function handleYearlyReport(request, env, deviceId, origin) {
     m.count++;
   }
 
-  const byType = [...byTypeMap.values()].map((t) => ({
-    ...t,
-    netFen: t.inFen - t.outFen,
-    label: EVENT_LABELS[t.type] || t.type,
-  }));
+  const byType = [...byTypeMap.values()]
+    .map((t) => ({
+      type: t.type,
+      label: EVENT_LABELS[t.type] || t.type,
+      inFen: t.inFen,
+      outFen: t.outFen,
+      netFen: t.inFen - t.outFen,
+      totalFen: t.inFen + t.outFen,
+      count: t.count,
+    }))
+    .sort((a, b) => (b.inFen + b.outFen) - (a.inFen + a.outFen));
   const byMonth = [...byMonthMap.values()]
-    .map((m) => ({ ...m, netFen: m.inFen - m.outFen }))
+    .map((m) => ({
+      month: m.month,
+      inFen: m.inFen,
+      outFen: m.outFen,
+      netFen: m.inFen - m.outFen,
+      totalFen: m.inFen + m.outFen,
+      count: m.count,
+    }))
     .sort((a, b) => a.month.localeCompare(b.month));
 
+  // 原后端 YearlyReport 的金额字段是 inFen/outFen/netFen（单位：分），
+  // 这里同时带上 total* 别名，保证各客户端字段都能取到。
   return jsonRes(
     {
       year: Number(year),
+      count: yearGifts.length,
+      years,
+      inFen: totalInFen,
+      outFen: totalOutFen,
+      netFen: totalInFen - totalOutFen,
+      totalFen: totalInFen + totalOutFen,
       totalInFen,
       totalOutFen,
-      netFen: totalInFen - totalOutFen,
-      count: yearGifts.length,
       byType,
       byMonth,
-      topPersons: buildPersonSummaries(yearGifts).slice(0, 5),
+      topPersons: buildPersonSummaries(yearGifts, events).slice(0, 5),
       recent: yearGifts.slice(0, 10),
-      years,
     },
     200,
     origin
