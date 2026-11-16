@@ -1027,44 +1027,75 @@ function chatEndpoint(baseUrl) {
   return base.endsWith('/chat/completions') ? base : `${base}/chat/completions`;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 429/连接抖动自动重试：最多 3 次尝试（首次 + 2 次退避重试），
+// 429 优先遵循服务端 Retry-After；总耗时控制在 Worker 墙钟限制内。
 async function callChat(baseUrl, apiKey, model, messages, maxTokens) {
   const payload = { model, messages, temperature: 0.2, stream: false };
   if (maxTokens) payload.max_tokens = maxTokens;
 
-  let res;
-  try {
-    res = await fetch(chatEndpoint(baseUrl), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(60000),
-    });
-  } catch (e) {
-    return { ok: false, error: `AI 服务连接失败：${e && e.message ? e.message : e}` };
-  }
-
-  if (!res.ok) {
-    let detail = '';
+  let lastError = '';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let res;
     try {
-      const data = await res.json();
-      detail = (data && data.error && data.error.message) || (data && data.message) || '';
-    } catch {
-      /* ignore */
+      res = await fetch(chatEndpoint(baseUrl), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch (e) {
+      lastError = `AI 服务连接失败：${e && e.message ? e.message : e}`;
+      if (attempt < 2) {
+        await sleep(1000 * (attempt + 1));
+        continue;
+      }
+      return { ok: false, error: lastError };
     }
-    if (res.status === 429) return { ok: false, error: 'AI 服务返回 429（请求过于频繁），请稍后再试' };
-    return { ok: false, error: `AI 服务返回 ${res.status}${detail ? `：${detail}` : ''}` };
-  }
 
-  let data;
-  try {
-    data = await res.json();
-  } catch {
-    return { ok: false, error: 'AI 服务返回内容不是有效 JSON' };
+    if (res.status === 429 && attempt < 2) {
+      // 读掉正文（拿提供方原因），按 Retry-After 退避后重试
+      let detail = '';
+      try {
+        const data = await res.json();
+        detail = (data && data.error && data.error.message) || (data && data.message) || '';
+      } catch {
+        /* ignore */
+      }
+      lastError = detail || 'AI 服务返回 429（请求过于频繁）';
+      const ra = Number(res.headers.get('retry-after'));
+      const waitMs = Number.isFinite(ra) && ra > 0 ? Math.min(ra * 1000, 10000) : 1000 * (attempt + 1);
+      await sleep(waitMs);
+      continue;
+    }
+
+    if (!res.ok) {
+      let detail = '';
+      try {
+        const data = await res.json();
+        detail = (data && data.error && data.error.message) || (data && data.message) || '';
+      } catch {
+        /* ignore */
+      }
+      if (res.status === 429) {
+        return { ok: false, error: `AI 服务返回 429（请求过于频繁/配额不足）${detail ? `：${detail}` : ''}，稍后再试；持续出现请检查该模型服务的限流与余额` };
+      }
+      return { ok: false, error: `AI 服务返回 ${res.status}${detail ? `：${detail}` : ''}` };
+    }
+
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      return { ok: false, error: 'AI 服务返回内容不是有效 JSON' };
+    }
+    return { ok: true, data };
   }
-  return { ok: true, data };
+  return { ok: false, error: lastError || 'AI 服务请求失败' };
 }
 
 async function getAiSettings(env, account) {
