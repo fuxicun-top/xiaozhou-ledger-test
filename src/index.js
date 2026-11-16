@@ -1139,7 +1139,6 @@ async function handleAiConfigSave(request, env, account, origin) {
   const test = await callChat(baseUrl, apiKey, model, [
     { role: 'user', content: '请只回复两个字：正常' },
   ]);
-  if (!test.ok) return fail(test.error, 400, origin);
 
   if (account.startsWith('phone:')) {
     await env.DB.prepare(
@@ -1154,6 +1153,23 @@ async function handleAiConfigSave(request, env, account, origin) {
       .bind(baseUrl, apiKey, model, account.slice(4))
       .run();
   }
+
+  // 429（限流/配额窗口）不阻止保存：配置先存好，解析时走浏览器直连兜底；
+  // 其他失败（401 key 错、404 地址错、连不通等）才报错不保存，避免存下坏配置。
+  if (!test.ok && test.error.indexOf('429') !== -1) {
+    return jsonRes(
+      {
+        baseUrl,
+        model,
+        configured: true,
+        warning:
+          '配置已保存，但该模型服务当前限流（429），连通性测试未通过。稍后重试保存可完成测试；「AI 记账」解析时会自动尝试浏览器直连兜底。',
+      },
+      200,
+      origin
+    );
+  }
+  if (!test.ok) return fail(test.error, 400, origin);
 
   return jsonRes({ baseUrl, model, configured: true, warning: '' }, 200, origin);
 }
