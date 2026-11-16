@@ -1228,7 +1228,28 @@ async function handleAiParse(request, env, account, origin) {
     { role: 'system', content: buildParsePrompt() },
     { role: 'user', content: text },
   ]);
-  if (!result.ok) return fail(result.error, 502, origin);
+  if (!result.ok) {
+    // Worker 出口 IP（Cloudflare）常被 AI 服务商限流（429/配额）。
+    // 把完整 AI 配置带进响应，前端检测到 429 后会用浏览器（用户本机 IP）直连重试；
+    // 这是该账号自己的 key，只回到该账号自己的浏览器，不产生新的泄露面。
+    if (result.error.indexOf('429') !== -1) {
+      return jsonRes(
+        {
+          error: result.error,
+          direct: {
+            baseUrl: view.baseUrl,
+            apiKey: s.ai_api_key,
+            model: view.model,
+            system: buildParsePrompt(),
+            user: text,
+          },
+        },
+        502,
+        origin
+      );
+    }
+    return fail(result.error, 502, origin);
+  }
 
   const choice = result.data && result.data.choices && result.data.choices[0];
   let content = choice && choice.message ? choice.message.content : '';

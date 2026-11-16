@@ -71,6 +71,82 @@
         var originalFetch = window.fetch ? window.fetch.bind(window) : null;
         if (!originalFetch) return;
 
+        /* ------------------------------------------------------------------ */
+        /* AI 解析 429 兜底：浏览器直连                                          */
+        /* Worker 出口 IP（Cloudflare）常被 AI 服务商限流；429 时后端把该账号的  */
+        /* AI 配置放进 502 响应，前端用浏览器（用户本机 IP）直连模型重试。       */
+        /* key 只出现在本人浏览器内存里，不经过本站其他逻辑。                   */
+        /* ------------------------------------------------------------------ */
+        function directAiParse(d) {
+          var url = String(d.baseUrl || "").replace(/\/+$/, "");
+          if (url.indexOf("/chat/completions") === -1) url += "/chat/completions";
+          return originalFetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: "Bearer " + d.apiKey },
+            body: JSON.stringify({
+              model: d.model,
+              messages: [
+                { role: "system", content: d.system },
+                { role: "user", content: d.user },
+              ],
+              temperature: 0.2,
+              stream: false,
+            }),
+            signal: AbortSignal.timeout ? AbortSignal.timeout(60000) : undefined,
+          })
+            .then(function (r) {
+              if (!r.ok) {
+                return r
+                  .text()
+                  .then(function (t) {
+                    throw new Error("浏览器直连 AI 也失败（HTTP " + r.status + "）" + (t ? "：" + t.slice(0, 160) : ""));
+                  });
+              }
+              return r.json();
+            })
+            .then(function (data) {
+              var choice = data && data.choices && data.choices[0];
+              var content = choice && choice.message ? choice.message.content : "";
+              if (Array.isArray(content)) {
+                content = content.map(function (p) { return typeof p === "string" ? p : (p && p.text) || ""; }).join("");
+              }
+              content = String(content || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+              var parsed = JSON.parse(content);
+              // 轻量归一化，与后端 normalizeAiRecords 对齐
+              var records = [];
+              var errors = [];
+              var today = new Date().toISOString().slice(0, 10);
+              var ETYPES = { wedding: 1, baby: 1, birthday: 1, housewarming: 1, graduation: 1, funeral: 1, other: 1 };
+              var RELS = { "朋友": 1, "亲戚": 1, "同事": 1, "同学": 1, "邻居": 1, "其他": 1 };
+              (Array.isArray(parsed.records) ? parsed.records : []).forEach(function (raw) {
+                if (!raw || typeof raw !== "object") return;
+                var person = String(raw.person || "").trim().slice(0, 80);
+                if (!person) { errors.push("有一条记录缺少姓名，已跳过"); return; }
+                var direction = raw.direction === "in" || raw.direction === "out" ? raw.direction : null;
+                if (!direction) { errors.push("「" + person + "」的收支方向无法识别，已跳过"); return; }
+                var amount = Number(String(raw.amountYuan || "").replace(/[^\d.]/g, ""));
+                if (!Number.isFinite(amount) || amount <= 0) { errors.push("「" + person + "」的金额无法识别，已跳过"); return; }
+                var rel = String(raw.relation || "").trim();
+                var dt = String(raw.date || "");
+                records.push({
+                  direction: direction,
+                  person: person,
+                  relation: RELS[rel] ? rel : "朋友",
+                  amountYuan: amount.toFixed(2).replace(/\.00$/, ""),
+                  eventType: ETYPES[raw.eventType] ? raw.eventType : "other",
+                  date: /^\d{4}-\d{2}-\d{2}$/.test(dt) ? dt : today,
+                  note: String(raw.note || "").slice(0, 500).trim(),
+                });
+              });
+              (Array.isArray(parsed.errors) ? parsed.errors : []).forEach(function (m) {
+                var s = String(m || "").trim().slice(0, 300);
+                if (s) errors.push(s);
+              });
+              if (!records.length && !errors.length) errors.push("没有解析出记录，换个说法试试");
+              return { records: records, errors: errors };
+            });
+        }
+
         window.fetch = function (input, init) {
           var url = typeof input === "string" ? input : input && input.url ? input.url : String(input);
           var nextInput = input;
@@ -93,7 +169,34 @@
             }
             nextInit.headers = headers;
           } catch (e) {}
-          return originalFetch(nextInput, nextInit);
+          var p = originalFetch(nextInput, nextInit);
+          // 仅对 AI 解析请求做 429 → 浏览器直连兜底
+          if (String(nextInput).indexOf("/api/ai/parse") !== -1) {
+            return p.then(function (r) {
+              if (r.status !== 502) return r;
+              return r
+                .clone()
+                .json()
+                .then(function (data) {
+                  if (!data || !data.direct || String(data.error || "").indexOf("429") === -1) return r;
+                  return directAiParse(data.direct)
+                    .then(function (normalized) {
+                      return new Response(JSON.stringify(normalized), {
+                        status: 200,
+                        headers: { "Content-Type": "application/json; charset=utf-8" },
+                      });
+                    })
+                    .catch(function () {
+                      // 浏览器直连也失败（CORS 不允许等）：回退给原始 502 错误
+                      return r;
+                    });
+                })
+                .catch(function () {
+                  return r;
+                });
+            });
+          }
+          return p;
         };
 
         /* ------------------------------------------------------------------ */
