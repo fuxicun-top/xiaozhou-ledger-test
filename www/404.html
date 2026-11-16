@@ -94,12 +94,18 @@
             }),
             signal: AbortSignal.timeout ? AbortSignal.timeout(60000) : undefined,
           })
+            .catch(function (e) {
+              throw new Error("浏览器直连失败（该 AI 服务不允许本站跨域调用，或网络不通）：" + (e && e.message ? e.message : e));
+            })
             .then(function (r) {
               if (!r.ok) {
                 return r
                   .text()
                   .then(function (t) {
-                    throw new Error("浏览器直连 AI 也失败（HTTP " + r.status + "）" + (t ? "：" + t.slice(0, 160) : ""));
+                    var extra = r.status === 429
+                      ? "（429 与站点无关，来自你的 AI 账号配额/限流，请检查该账号的余额与限流策略）"
+                      : "";
+                    throw new Error("浏览器直连 AI 也失败（HTTP " + r.status + "）" + (t ? "：" + t.slice(0, 160) : "") + extra);
                   });
               }
               return r.json();
