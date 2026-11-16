@@ -6,11 +6,30 @@
 
 ## 功能与账号模型（跨设备同一本账）
 
-- **手机号 + PIN 账号**：首次「注册」输入手机号并设 4–16 位 PIN，得到一个 8 位**恢复码**（忘记 PIN 时凭恢复码重置）。之后在**任何浏览器、任何设备**登录同一手机号，看到同一本账；登录后本浏览器被记住（设备绑定），再次访问免输 PIN。
+- **手机号 + PIN 账号**：首次「注册」输入手机号并设 4–16 位 PIN。之后在**任何浏览器、任何设备**登录同一手机号，看到同一本账；登录后本浏览器被记住（设备绑定），再次访问免输 PIN。
+- **忘记 PIN**：两条路：① 联系部署管理员，由其用管理员密钥重置 PIN；② 重新注册该手机号——需**二次点击确认**，会清空该手机号名下全部数据，之后设一个新 PIN 继续使用。
 - **游客**：不登录也能用，数据属于本机浏览器（`dev:<设备>`）。换浏览器后这些数据"消失"，但注册手机号时可勾选**把本浏览器已有数据并入账号**找回；也可用「导出加密备份 → 导入」迁移。
 - **微信小程序 / 第三方客户端**：在「设置 → 接口密钥」生成密钥（`X-Api-Key`），与手机号账号读写同一本账。
 
-> PIN 与恢复码只存于**你自己的** Cloudflare D1，服务端只存哈希。注册时请保存好恢复码。
+> PIN 只存于**你自己的** Cloudflare D1（服务端只存哈希）。忘记 PIN 时：联系部署管理员（用管理员密钥重置），或重新注册该手机号（清空名下数据，二次点击确认执行）。
+
+## 管理员密钥（可选）
+
+忘记 PIN 的后台重置接口需要管理员密钥。部署者在 Cloudflare 控制台为 Worker 设置 Secret `ADMIN_KEY`（任意随机串）后，可用：
+
+```bash
+# 重置某账号的 PIN
+curl -X POST https://你的域名/api/admin/reset-pin \
+  -H "Content-Type: application/json" -H "X-Admin-Key: <你的 ADMIN_KEY>" \
+  -d '{"phone":"13800000000","pin":"1234"}'
+
+# 清空某账号（删账号及名下全部数据，账号方可重新注册）
+curl -X POST https://你的域名/api/admin/purge-account \
+  -H "Content-Type: application/json" -H "X-Admin-Key: <你的 ADMIN_KEY>" \
+  -d '{"phone":"13800000000"}'
+```
+
+未设置 `ADMIN_KEY` 时这两个接口拒绝所有请求。
 
 ## 架构
 
@@ -99,10 +118,9 @@ curl https://<你的地址>/api/health
 
 ### 5. 注册手机号，绑定设备
 
-1. 打开你的站点，未登录时右下角有 **「📱 手机号登录」** 悬浮按钮（设置页「账户」面板里也有「绑定手机号」按钮）。
+1. 打开你的站点，进入「设置 → 账户」，点「绑定手机号（登录 / 注册）」。
 2. 点「注册」标签 → 输入 11 位手机号 + 设置 PIN → 提交。
-3. **保存 8 位恢复码**（丢了就找不回 PIN）。
-4. 之后换手机/电脑登录同一手机号，即看到同一本账。
+3. 之后换手机/电脑登录同一手机号，即看到同一本账。忘记 PIN：联系部署管理员，或重新注册该手机号（二次点击确认，清空名下数据）。
 
 游客数据想保留：注册时勾选「把本浏览器已有的账本数据并入手机号账号」。
 
@@ -149,12 +167,12 @@ npx wrangler deploy
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/health` | 健康检查 |
-| POST | `/api/account/register` | 注册手机号账号（`phone`/`pin`/`importDevice`），返回 `recoveryCode` |
+| POST | `/api/account/register` | 注册手机号账号（`phone`/`pin`/`importDevice`；`force=true` 时清空该手机号原有全部数据并重建账号） |
 | POST | `/api/account/login` | 登录校验 PIN |
 | GET | `/api/account/check?phone=` | 查询手机号是否已注册 |
-| POST | `/api/account/recovery` | 凭 phone+PIN 取恢复码 |
-| POST | `/api/account/reset` | 凭恢复码重置 PIN |
 | DELETE | `/api/account/device` | 解除本机设备绑定（重新要求 PIN） |
+| POST | `/api/admin/reset-pin` | 管理员重置 PIN（需 `X-Admin-Key` 匹配 `ADMIN_KEY`） |
+| POST | `/api/admin/purge-account` | 管理员清空账号及其全部数据（需 `X-Admin-Key`） |
 | GET | `/api/session` | 会话信息（`auth.loggedIn/guest`） |
 | GET/POST | `/api/events` | 活动列表 / 新建（按账号+类型+日期去重） |
 | POST/DELETE | `/api/events/:id` | 更新 / 删除活动（级联删其礼金） |
@@ -176,7 +194,7 @@ npx wrangler deploy
 
 ## 已知限制
 
-- 无短信/邮箱验证，手机号仅作为「自报 + PIN + 恢复码」身份；PIN 强度依赖用户自设。
+- 无短信/邮箱验证，手机号仅作为「自报 + PIN」身份；PIN 强度依赖用户自设，服务端只存 PIN 哈希。忘记 PIN 只能由管理员重置或重新注册（清空数据）。
 - 微信支付购买入口不可用（Web 部署视为永久版）。
 - 小程序客户端源码与原作者云端网关不在本仓库中；服务端已兼容其接口契约，端到端绑定取决于官方小程序是否直连你的配置地址。
 - 前端为官方编译产物，未重新打包；仅做了 API 地址、设备标识、二维码协议自适应与账号 UI 注入。

@@ -136,8 +136,6 @@
             ".lg-btn.ghost{background:transparent;color:#8c6d4f;margin-top:8px}" +
             ".lg-msg{font-size:12px;margin-top:10px;min-height:16px;line-height:1.5}" +
             ".lg-msg.err{color:#c0392b}.lg-msg.ok{color:#2e7d32}.lg-msg.warn{color:#9a7b00}" +
-            ".lg-rec{background:#fdf6e7;border:1px solid #ecd9a8;border-radius:10px;padding:10px 12px;margin-top:12px;font-size:13px;line-height:1.6;display:none}" +
-            ".lg-rec b{letter-spacing:2px;font-size:15px}" +
             ".lg-links{display:flex;justify-content:space-between;margin-top:10px;font-size:12px;color:#8a8178}" +
             ".lg-links a{color:#8c6d4f;text-decoration:none;cursor:pointer}";
           document.head.appendChild(style);
@@ -149,16 +147,13 @@
             '<div class="lg-card">' +
             '<h2 id="lg-title">登录</h2>' +
             '<p class="lg-sub" id="lg-sub">输入手机号和 PIN，在任意浏览器、任意设备查看同一本账。</p>' +
-            '<div class="lg-tabs"><div class="lg-tab on" id="tab-login">登录</div><div class="lg-tab" id="tab-reg">注册</div><div class="lg-tab" id="tab-reset">找回 PIN</div></div>' +
+            '<div class="lg-tabs"><div class="lg-tab on" id="tab-login">登录</div><div class="lg-tab" id="tab-reg">注册</div></div>' +
             '<div class="lg-field" id="f-phone"><label>手机号</label><input id="i-phone" inputmode="numeric" maxlength="20" placeholder="11 位手机号" autocomplete="off"></div>' +
             '<div class="lg-field" id="f-pin"><label>PIN（4-16 位数字）</label><input id="i-pin" inputmode="numeric" maxlength="16" placeholder="登录 PIN" autocomplete="off"></div>' +
             '<div class="lg-field" id="f-pin2" style="display:none"><label>确认 PIN</label><input id="i-pin2" inputmode="numeric" maxlength="16" placeholder="再输入一次 PIN" autocomplete="off"></div>' +
-            '<div class="lg-field" id="f-recode" style="display:none"><label>恢复码（注册时展示 8 位）</label><input id="i-recode" maxlength="8" placeholder="如 3CD9AF5A"></div>' +
-            '<div class="lg-field" id="f-newpin" style="display:none"><label>新 PIN（4-16 位数字）</label><input id="i-newpin" inputmode="numeric" maxlength="16" placeholder="设置新 PIN"></div>' +
             '<label id="f-merge" style="display:none;font-size:12px;color:#8a8178;margin-bottom:8px;cursor:pointer"><input id="i-merge" type="checkbox" checked style="vertical-align:middle"> 把本浏览器已有的账本数据并入手机号账号</label>' +
             '<button class="lg-btn" id="lg-go">登录</button>' +
             '<button class="lg-btn ghost" id="lg-guest" style="display:none">先以访客身份使用</button>' +
-            '<div class="lg-rec" id="lg-rec"><div style="margin-bottom:4px">请保存好恢复码（忘记 PIN 时用它找回账号）：</div><b id="lg-rec-code"></b></div>' +
             '<div class="lg-msg" id="lg-msg"></div>' +
             '<div class="lg-links" id="lg-links"><a id="lg-forgot">忘记 PIN？</a><a id="lg-unbind" style="display:none;color:#c0392b">解除本机登录</a></div>' +
             "</div>";
@@ -166,6 +161,7 @@
 
           var $ = function (id) { return overlay.querySelector(id); };
           var mode = "login";
+          var confirmForce = false; // 该手机号已注册时，二次点击「注册」才执行强制重注册（清空数据）
 
           function msg(text, cls) {
             var m = $("#lg-msg");
@@ -175,34 +171,31 @@
 
           function setMode(m) {
             mode = m;
-            var tabs = [$("#tab-login"), $("#tab-reg"), $("#tab-reset")];
+            confirmForce = false;
+            var tabs = [$("#tab-login"), $("#tab-reg")];
             tabs.forEach(function (t) { t.classList.remove("on"); });
             $("#tab-login").classList.toggle("on", m === "login");
             $("#tab-reg").classList.toggle("on", m === "reg");
-            $("#tab-reset").classList.toggle("on", m === "reset");
 
             var isReg = m === "reg";
-            var isReset = m === "reset";
-            $("#lg-title").textContent = isReg ? "注册账号" : isReset ? "找回 PIN" : "登录";
+            $("#lg-title").textContent = isReg ? "注册账号" : "登录";
             $("#lg-sub").textContent = isReg
-              ? "手机号 + PIN 即账号。注册后换任何浏览器、任何设备登录同一手机号，都是同一本账。"
-              : isReset
-                ? "输入恢复码和新 PIN，即可重置登录 PIN。"
-                : "输入手机号和 PIN，在任意浏览器、任意设备查看同一本账。";
+              ? "手机号 + PIN 即账号。注册后换任何浏览器、任何设备登录同一手机号，都是同一本账。忘记 PIN 请联系管理员，或重新注册该手机号（原数据将清空）。"
+              : "输入手机号和 PIN，在任意浏览器、任意设备查看同一本账。";
             $("#f-pin2").style.display = isReg ? "" : "none";
-            $("#f-recode").style.display = isReset ? "" : "none";
-            $("#f-newpin").style.display = isReset ? "" : "none";
             $("#f-merge").style.display = isReg ? "" : "none";
             $("#i-pin").placeholder = isReg ? "设置 PIN（4-16 位数字）" : "登录 PIN";
-            $("#lg-go").textContent = isReg ? "注册并登录" : isReset ? "重置 PIN" : "登录";
+            $("#lg-go").textContent = isReg ? "注册并登录" : "登录";
             $("#lg-guest").style.display = isReg ? "" : "none";
             msg("");
           }
 
           $("#tab-login").onclick = function () { setMode("login"); };
           $("#tab-reg").onclick = function () { setMode("reg"); };
-          $("#tab-reset").onclick = function () { setMode("reset"); };
-          $("#lg-forgot").onclick = function () { setMode("reset"); };
+          $("#lg-forgot").onclick = function () {
+            setMode("reg");
+            msg("忘记 PIN：可联系管理员重置；或在上方输入该手机号后点「注册」重新注册（将清空该手机号名下全部数据，二次点击确认执行）。", "warn");
+          };
 
           // 设置页「账户」面板的入口（替代原悬浮按钮）：
           // 未登录 → 打开注册；已登录 → 打开账号管理面板（切换 / 退出）
@@ -219,7 +212,7 @@
               $("#lg-unbind").style.display = "none";
             }
             var go = $("#lg-go");
-            delete go.dataset.done;
+            if (!hasLogin) confirmForce = false;
             go.textContent = hasLogin ? "登录 / 切换账号" : "注册并登录";
             msg("");
             overlay.style.display = "flex";
@@ -254,12 +247,6 @@
             var done = function () { $("#lg-go").disabled = false; };
             msg("");
 
-            // 注册成功展示恢复码后的「完成」
-            if ($("#lg-go").dataset.done) {
-              location.reload();
-              return;
-            }
-
             if (mode === "reg") {
               var pin2 = $("#i-pin2").value.trim();
               if (!/^\d{5,20}$/.test(phone)) return msg("请输入正确的手机号", "err");
@@ -270,40 +257,21 @@
                 phone: phone,
                 pin: pin,
                 importDevice: $("#i-merge").checked,
+                force: confirmForce,
               })
                 .then(function (d) {
                   saveLogin(phone, pin);
-                  if (d.recoveryCode) {
-                    $("#lg-rec").style.display = "";
-                    $("#lg-rec-code").textContent = d.recoveryCode;
-                    msg(d.hint || "注册成功", "ok");
-                    $("#lg-go").textContent = "完成，进入账本";
-                    $("#lg-go").dataset.done = "1";
-                  } else {
-                    done();
-                    location.reload();
-                  }
-                })
-                .catch(function (e) {
-                  done();
-                  msg(e.message + (e.message === "该手机号已注册，请直接登录" ? "（可点「登录」）" : ""), "err");
-                });
-              return;
-            }
-
-            if (mode === "reset") {
-              var rec = $("#i-recode").value.trim();
-              var newPin = $("#i-newpin").value.trim();
-              if (!/^\d{5,20}$/.test(phone)) return msg("请输入正确的手机号", "err");
-              if (!/^\d{4,16}$/.test(newPin)) return msg("新 PIN 需为 4-16 位数字", "err");
-              busy();
-              apiCall("/api/account/reset", "POST", { phone: phone, recovery: rec, pin: newPin })
-                .then(function () {
-                  saveLogin(phone, newPin);
                   location.reload();
                 })
                 .catch(function (e) {
                   done();
+                  confirmForce = false;
+                  if (String(e.message).indexOf("已注册") !== -1) {
+                    msg("该手机号已注册。忘记 PIN 可联系管理员重置；或重新注册该手机号——⚠️ 这会清空它名下全部数据，确认后再点一次「注册」执行。", "warn");
+                    confirmForce = true;
+                    $("#lg-go").textContent = "确认：清空并重新注册";
+                    return;
+                  }
                   msg(e.message, "err");
                 });
               return;

@@ -5,7 +5,6 @@
 CREATE TABLE IF NOT EXISTS accounts (
   phone TEXT PRIMARY KEY,
   pin_hash TEXT NOT NULL,
-  recovery_hash TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 

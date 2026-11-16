@@ -123,13 +123,8 @@ function maskPhone(phone) {
 }
 
 /* ------------------------------------------------------------------ */
-/* PIN / 恢复码                                                        */
+/* PIN 哈希                                                            */
 /* ------------------------------------------------------------------ */
-
-async function sha256Hex(text) {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
 
 async function hmacSha256Hex(keyText, message) {
   const key = await crypto.subtle.importKey(
@@ -150,10 +145,6 @@ async function hashPin(pin, salt) {
     h = await hmacSha256Hex(pin, `${salt}:${i}`);
   }
   return h;
-}
-
-function recoveryCode(phone, pin) {
-  return `恢复码：${sha256Hex(`${phone}|${pin}|recovery`).slice(0, 8).toUpperCase()}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -279,15 +270,27 @@ async function handleAccountRegister(request, env, identity, origin) {
   const exists = await env.DB.prepare('SELECT 1 AS x FROM accounts WHERE phone = ?')
     .bind(phone)
     .first();
-  if (exists) return fail('该手机号已注册，请直接登录', 409, origin);
+  if (exists && !body.force) {
+    return fail('该手机号已注册，请直接登录。忘记 PIN 可联系管理员重置；也可重新注册该手机号（将清空名下全部数据）', 409, origin);
+  }
+
+  if (exists && body.force) {
+    // 重新注册：清空该手机号账号名下全部数据，重建账号
+    const account = `phone:${phone}`;
+    await env.DB.prepare('DELETE FROM events WHERE account = ?').bind(account).run();
+    await env.DB.prepare('DELETE FROM gifts WHERE account = ?').bind(account).run();
+    await env.DB.prepare('DELETE FROM account_settings WHERE account = ?').bind(account).run();
+    await env.DB.prepare('DELETE FROM account_keys WHERE phone = ?').bind(phone).run();
+    await env.DB.prepare('DELETE FROM device_bindings WHERE phone = ?').bind(phone).run();
+    await env.DB.prepare('DELETE FROM accounts WHERE phone = ?').bind(phone).run();
+  }
 
   const salt = crypto.randomUUID();
   const pinHash = `${salt}|${await hashPin(pin, salt)}`;
-  const recoveryHash = await sha256Hex(`${phone}|${pin}|recovery`);
 
   const account = `phone:${phone}`;
-  await env.DB.prepare('INSERT INTO accounts (phone, pin_hash, recovery_hash, created_at) VALUES (?, ?, ?, ?)')
-    .bind(phone, pinHash, recoveryHash, nowIso())
+  await env.DB.prepare('INSERT INTO accounts (phone, pin_hash, created_at) VALUES (?, ?, ?)')
+    .bind(phone, pinHash, nowIso())
     .run();
   await env.DB.prepare('INSERT OR IGNORE INTO account_settings (account) VALUES (?)')
     .bind(account)
@@ -330,18 +333,19 @@ async function handleAccountRegister(request, env, identity, origin) {
       .run();
   }
 
-  const recovery = (await sha256Hex(`${phone}|${pin}|recovery`)).slice(0, 8).toUpperCase();
   return jsonRes(
     {
       phone,
       registered: true,
+      force: Boolean(exists && body.force),
       importedEvents: importEvents,
       importedGifts: importGifts,
-      recoveryCode: recovery,
       hint:
-        importEvents + importGifts > 0
-          ? '本浏览器已有数据已并入账号'
-          : '请保存恢复码，忘记 PIN 时可用它重置',
+        exists && body.force
+          ? '已重新注册，该手机号原有数据已全部清空'
+          : importEvents + importGifts > 0
+            ? '本浏览器已有数据已并入账号'
+            : '注册成功，请牢记 PIN',
     },
     200,
     origin
@@ -387,48 +391,52 @@ async function handleAccountCheck(request, env, origin) {
   return jsonRes({ phone, registered: Boolean(acc) }, 200, origin);
 }
 
-async function handleAccountRecovery(request, env, origin) {
+// 忘记 PIN：管理员重置（部署者在 Cloudflare 控制台设置 ADMIN_KEY 密钥）
+async function handleAdminResetPin(request, env, origin) {
   const body = await readJson(request);
   if (!body) return fail('请求内容格式错误', 400, origin);
+  const adminKey = (request.headers.get('X-Admin-Key') || '').trim();
+  if (!env.ADMIN_KEY || adminKey !== env.ADMIN_KEY) {
+    return fail('管理员密钥无效', 403, origin);
+  }
   const phone = asString(body.phone, 20).trim();
-  const pin = asString(body.pin, 20).trim();
+  const newPin = asString(body.pin, 20).trim();
+  if (!validPhone(phone)) return fail('请输入正确的手机号', 400, origin);
+  if (!validPin(newPin)) return fail('PIN 需为 4-16 位数字', 400, origin);
   const acc = await env.DB.prepare('SELECT 1 AS x FROM accounts WHERE phone = ?')
     .bind(phone)
     .first();
   if (!acc) return fail('该手机号未注册', 404, origin);
-  const ok = await verifyPin(env, phone, pin);
-  if (!ok) return fail('PIN 不正确', 403, origin);
-  return jsonRes({ code: (await sha256Hex(`${phone}|${pin}|recovery`)).slice(0, 8).toUpperCase() }, 200, origin);
+  const salt = crypto.randomUUID();
+  const pinHash = `${salt}|${await hashPin(newPin, salt)}`;
+  await env.DB.prepare('UPDATE accounts SET pin_hash = ? WHERE phone = ?')
+    .bind(pinHash, phone)
+    .run();
+  return jsonRes({ phone, reset: true }, 200, origin);
 }
 
-async function handleAccountReset(request, env, origin) {
+// 忘记 PIN：删除账号并清空其名下全部数据（之后可重新注册，PIN 自设）
+async function handleAdminPurge(request, env, origin) {
   const body = await readJson(request);
   if (!body) return fail('请求内容格式错误', 400, origin);
+  const adminKey = (request.headers.get('X-Admin-Key') || '').trim();
+  if (!env.ADMIN_KEY || adminKey !== env.ADMIN_KEY) {
+    return fail('管理员密钥无效', 403, origin);
+  }
   const phone = asString(body.phone, 20).trim();
-  const code = asString(body.recovery, 16).trim().toUpperCase();
-  const newPin = asString(body.pin, 20).trim();
   if (!validPhone(phone)) return fail('请输入正确的手机号', 400, origin);
-  if (!validPin(newPin)) return fail('新 PIN 需为 4-16 位数字', 400, origin);
-
-  const acc = await env.DB.prepare('SELECT * FROM accounts WHERE phone = ?')
+  const acc = await env.DB.prepare('SELECT 1 AS x FROM accounts WHERE phone = ?')
     .bind(phone)
     .first();
   if (!acc) return fail('该手机号未注册', 404, origin);
-
-  // 恢复码校验：注册/重置时存了 recovery_hash = sha256(phone|pin|recovery)，
-  // 用户凭恢复码（前 8 位）即可重置 PIN。
-  const stored = acc.recovery_hash;
-  if (!stored || stored.slice(0, 8).toUpperCase() !== code) {
-    return fail('恢复码不正确', 403, origin);
-  }
-
-  const salt = crypto.randomUUID();
-  const pinHash = `${salt}|${await hashPin(newPin, salt)}`;
-  const recoveryHash = await sha256Hex(`${phone}|${newPin}|recovery`);
-  await env.DB.prepare('UPDATE accounts SET pin_hash = ?, recovery_hash = ? WHERE phone = ?')
-    .bind(pinHash, recoveryHash, phone)
-    .run();
-  return jsonRes({ phone, reset: true }, 200, origin);
+  const account = `phone:${phone}`;
+  await env.DB.prepare('DELETE FROM events WHERE account = ?').bind(account).run();
+  await env.DB.prepare('DELETE FROM gifts WHERE account = ?').bind(account).run();
+  await env.DB.prepare('DELETE FROM account_settings WHERE account = ?').bind(account).run();
+  await env.DB.prepare('DELETE FROM account_keys WHERE phone = ?').bind(phone).run();
+  await env.DB.prepare('DELETE FROM device_bindings WHERE phone = ?').bind(phone).run();
+  await env.DB.prepare('DELETE FROM accounts WHERE phone = ?').bind(phone).run();
+  return jsonRes({ phone, purged: true }, 200, origin);
 }
 
 async function handleAccountUnbindDevice(request, env, identity, origin) {
@@ -1566,11 +1574,12 @@ export default {
       if (path === '/api/account/check' && request.method === 'GET') {
         return handleAccountCheck(request, env, origin);
       }
-      if (path === '/api/account/recovery' && request.method === 'POST') {
-        return handleAccountRecovery(request, env, origin);
+      // 忘记 PIN：管理员重置 / 清空账号（需 X-Admin-Key 与 env.ADMIN_KEY 匹配）
+      if (path === '/api/admin/reset-pin' && request.method === 'POST') {
+        return handleAdminResetPin(request, env, origin);
       }
-      if (path === '/api/account/reset' && request.method === 'POST') {
-        return handleAccountReset(request, env, origin);
+      if (path === '/api/admin/purge-account' && request.method === 'POST') {
+        return handleAdminPurge(request, env, origin);
       }
 
       const identity = await resolveIdentity(request, env);
