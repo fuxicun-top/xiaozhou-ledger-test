@@ -139,9 +139,7 @@
             ".lg-rec{background:#fdf6e7;border:1px solid #ecd9a8;border-radius:10px;padding:10px 12px;margin-top:12px;font-size:13px;line-height:1.6;display:none}" +
             ".lg-rec b{letter-spacing:2px;font-size:15px}" +
             ".lg-links{display:flex;justify-content:space-between;margin-top:10px;font-size:12px;color:#8a8178}" +
-            ".lg-links a{color:#8c6d4f;text-decoration:none;cursor:pointer}" +
-            ".lg-pill{position:fixed;right:14px;bottom:14px;z-index:9998;background:#2b2622;color:#f5f1ea;border:none;border-radius:999px;padding:9px 16px;font-size:13px;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.25);font-family:inherit}" +
-            ".lg-pill.guest{background:#8c6d4f}";
+            ".lg-links a{color:#8c6d4f;text-decoration:none;cursor:pointer}";
           document.head.appendChild(style);
 
           var overlay = document.createElement("div");
@@ -166,16 +164,8 @@
             "</div>";
           document.body.appendChild(overlay);
 
-          // 悬浮入口按钮（独立挂在 body 上，避免被弹窗 DOM 层级影响）
-          var pill = document.createElement("button");
-          pill.className = "lg-pill guest";
-          pill.id = "lg-pill";
-          pill.style.display = "none";
-          document.body.appendChild(pill);
-
           var $ = function (id) { return overlay.querySelector(id); };
           var mode = "login";
-          var guestDismissed = false;
 
           function msg(text, cls) {
             var m = $("#lg-msg");
@@ -214,60 +204,46 @@
           $("#tab-reset").onclick = function () { setMode("reset"); };
           $("#lg-forgot").onclick = function () { setMode("reset"); };
 
-          function refreshPill() {
-            var phone = getLoginPhone();
-            var pin = getLoginPin();
-            if (phone && pin) {
-              pill.textContent = "👤 " + maskPhone(phone) + " · 账号管理";
-              pill.className = "lg-pill";
-              pill.style.display = guestDismissed ? "none" : "block";
-              $("#lg-unbind").style.display = "none";
-            } else {
-              pill.textContent = "📱 手机号登录 · 多设备同一本账";
-              pill.className = "lg-pill guest";
-              pill.style.display = guestDismissed ? "none" : "block";
-            }
-          }
-
-          pill.onclick = function () {
+          // 设置页「账户」面板的入口（替代原悬浮按钮）：
+          // 未登录 → 打开注册；已登录 → 打开账号管理面板（换手机号 / 退出）
+          var openAccountPanel = function () {
             var hasLogin = getLoginPhone() && getLoginPin();
+            var go = $("#lg-go");
+            delete go.dataset.done;
+            go.textContent = hasLogin ? "登录 / 切换账号" : "注册并登录";
             if (hasLogin) {
               setMode("login");
               $("#i-phone").value = getLoginPhone();
-              $("#i-pin").value = getLoginPin();
+              $("#i-pin").value = "";
+              $("#i-pin").placeholder = "登录 PIN";
               $("#lg-unbind").style.display = "";
-              $("#lg-guest").style.display = "none";
-              overlay.style.display = "flex";
-              guestDismissed = false;
             } else {
               setMode("reg");
-              overlay.style.display = "flex";
-              guestDismissed = false;
+              $("#lg-unbind").style.display = "none";
             }
+            msg("");
+            overlay.style.display = "flex";
           };
 
-          // 关闭悬浮入口（本会话）
+          // 点击遮罩空白处关闭面板
           document.addEventListener("click", function (ev) {
             if (ev.target === overlay && overlay.style.display === "flex") {
               overlay.style.display = "none";
             }
           });
 
+          // 退出登录 / 切换账号：解除本机设备绑定（服务端不再记住本设备）并清除本地登录
           $("#lg-unbind").onclick = function () {
-            apiCall("/api/account/device", "DELETE").then(function () {
-              clearLogin();
-              guestDismissed = false;
-              refreshPill();
-              location.reload();
-            }).catch(function (e) {
-              msg("解绑失败：" + e.message, "err");
-            });
+            apiCall("/api/account/device", "DELETE")
+              .catch(function () { /* 游客无账号，本地清除即可 */ })
+              .then(function () {
+                clearLogin();
+                location.reload();
+              });
           };
 
           $("#lg-guest").onclick = function () {
-            guestDismissed = true;
             overlay.style.display = "none";
-            refreshPill();
             location.reload();
           };
 
@@ -277,6 +253,12 @@
             var busy = function () { $("#lg-go").disabled = true; };
             var done = function () { $("#lg-go").disabled = false; };
             msg("");
+
+            // 注册成功展示恢复码后的「完成」
+            if ($("#lg-go").dataset.done) {
+              location.reload();
+              return;
+            }
 
             if (mode === "reg") {
               var pin2 = $("#i-pin2").value.trim();
@@ -295,6 +277,8 @@
                     $("#lg-rec").style.display = "";
                     $("#lg-rec-code").textContent = d.recoveryCode;
                     msg(d.hint || "注册成功", "ok");
+                    $("#lg-go").textContent = "完成，进入账本";
+                    $("#lg-go").dataset.done = "1";
                   } else {
                     done();
                     location.reload();
@@ -345,15 +329,12 @@
               });
           };
 
-          // Web 部署说明：注入「绑定手机号」按钮，并修正设置页残留的旧 NAS/网关文案
-          injectLedgerPanel(pill);
-
-          if (!logged) {
-            refreshPill();
-          }
+          // Web 部署说明：在设置页「账户」面板注入「绑定手机号 / 账号管理」入口，
+          // 并修正设置页残留的旧 NAS/网关文案
+          injectLedgerPanel(openAccountPanel);
         }
 
-        function injectLedgerPanel(pillEl) {
+        function injectLedgerPanel(openPanel) {
           var done = false;
 
           function textOf(el) {
@@ -419,10 +400,8 @@
               btn.id = "__bindPhone";
               btn.className = "button";
               btn.style.cssText = "width:100%;margin-top:10px;justify-content:center;height:38px;font-size:13px";
-              btn.textContent = logged ? "绑定其他手机号 / 账号管理" : "绑定手机号（登录 / 注册）";
-              btn.onclick = function () {
-                pill.click();
-              };
+              btn.textContent = logged ? "账号管理（切换 / 退出）" : "绑定手机号（登录 / 注册）";
+              btn.onclick = openPanel;
               sec.appendChild(btn);
             }
 
