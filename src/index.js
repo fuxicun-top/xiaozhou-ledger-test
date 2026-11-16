@@ -38,14 +38,11 @@ const METHOD_LABELS = {
 const RELATIONS = new Set(['朋友', '亲戚', '同事', '同学', '邻居', '其他']);
 const METHODS = new Set(['cash', 'wechat', 'alipay', 'other']);
 
-const ALLOWED_ORIGINS = new Set([
-  'https://rq.fuxicun.top',
-  'http://rq.fuxicun.top',
-]);
-
-/* ------------------------------------------------------------------ */
-/* 基础工具                                                            */
-/* ------------------------------------------------------------------ */
+/* 跨域策略：默认反射请求方 Origin。
+ * 本 API 的认证全部基于自定义请求头/令牌（X-Ledger-Phone/Pin、X-Api-Key、X-Ledger-Token），
+ * 不使用 Cookie 会话，反射 Origin 不会扩大跨站写入面——写操作仍需调用方自己的凭据。
+ * 这样任何部署者把本仓库部署到自有 Cloudflare + D1 时无需改代码即可跨域调用。
+ * 部署方若希望收紧，可把下方 corsHeaders 改回固定白名单并填入自有域名。 */
 
 function corsHeaders(origin) {
   const headers = {
@@ -55,11 +52,15 @@ function corsHeaders(origin) {
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
   };
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
+  if (origin) {
     headers['Access-Control-Allow-Origin'] = origin;
   }
   return headers;
 }
+
+/* ------------------------------------------------------------------ */
+/* 基础工具                                                            */
+/* ------------------------------------------------------------------ */
 
 function jsonRes(data, status = 200, origin = null) {
   return new Response(JSON.stringify(data), {

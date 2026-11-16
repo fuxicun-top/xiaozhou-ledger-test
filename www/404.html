@@ -163,12 +163,17 @@
             '<div class="lg-rec" id="lg-rec"><div style="margin-bottom:4px">请保存好恢复码（忘记 PIN 时用它找回账号）：</div><b id="lg-rec-code"></b></div>' +
             '<div class="lg-msg" id="lg-msg"></div>' +
             '<div class="lg-links" id="lg-links"><a id="lg-forgot">忘记 PIN？</a><a id="lg-unbind" style="display:none;color:#c0392b">解除本机登录</a></div>' +
-            "</div>" +
-            "<button class='lg-pill' id='lg-pill' style='display:none'></button>";
+            "</div>";
           document.body.appendChild(overlay);
 
+          // 悬浮入口按钮（独立挂在 body 上，避免被弹窗 DOM 层级影响）
+          var pill = document.createElement("button");
+          pill.className = "lg-pill guest";
+          pill.id = "lg-pill";
+          pill.style.display = "none";
+          document.body.appendChild(pill);
+
           var $ = function (id) { return overlay.querySelector(id); };
-          var pill = $("#lg-pill");
           var mode = "login";
           var guestDismissed = false;
 
@@ -340,9 +345,102 @@
               });
           };
 
-          // 未登录（游客）且未手动关闭时，显示悬浮入口；已登录则不显示整层
+          // Web 部署说明：注入「绑定手机号」按钮，并修正设置页残留的旧 NAS/网关文案
+          injectLedgerPanel(pill);
+
           if (!logged) {
             refreshPill();
+          }
+        }
+
+        function injectLedgerPanel(pillEl) {
+          var done = false;
+
+          function textOf(el) {
+            return el ? (el.textContent || "").trim() : "";
+          }
+
+          function patch() {
+            if (done) return;
+
+            // 1. 「身份与运行状态」面板：修正残留的 NAS/网关文案
+            var sec = null;
+            var dts = document.querySelectorAll("dt");
+            for (var i = 0; i < dts.length; i++) {
+              if (textOf(dts[i]) === "运行模式") { sec = dts[i].closest("section, .panel"); break; }
+            }
+            if (sec && !sec.dataset.ledgerPatched) {
+              sec.dataset.ledgerPatched = "1";
+              var dds = sec.querySelectorAll("dd");
+              if (dds[0]) dds[0].textContent = logged ? maskPhone(getLoginPhone()) : "访客（未绑定手机号）";
+              if (dds[1]) dds[1].textContent = "云端（Cloudflare Worker + D1）";
+              if (dds[2]) dds[2].textContent = "数据存储于 Cloudflare D1（随本仓库部署，无需 NAS）";
+              var dl = sec.querySelector("dl");
+              if (dl) {
+                var addRow = function (k, v) {
+                  var row = document.createElement("div");
+                  var dt = document.createElement("dt");
+                  dt.textContent = k;
+                  var dd = document.createElement("dd");
+                  dd.textContent = v;
+                  row.appendChild(dt);
+                  row.appendChild(dd);
+                  dl.appendChild(row);
+                };
+                addRow("运行状态", "在线（/api/health）");
+                addRow("数据隔离", logged ? "按手机号账号隔离，跨设备同步" : "游客模式：按浏览器设备隔离，绑定手机号后跨设备同步");
+              }
+            }
+
+            // 2. 「接口密钥」面板文案：NAS/内网穿透 → Cloudflare D1（只改文本节点，保留动态端口）
+            var subs = document.querySelectorAll(".panel-sub");
+            for (var j = 0; j < subs.length; j++) {
+              var nodes = subs[j].childNodes;
+              for (var q = 0; q < nodes.length; q++) {
+                if (nodes[q].nodeType === 3 && nodes[q].nodeValue.indexOf("数据只存 NAS") !== -1) {
+                  nodes[q].nodeValue = nodes[q].nodeValue.replace(
+                    "供微信小程序远程访问本机账本（数据只存 NAS，经你自己的内网穿透/公网地址转发）。 当前对外端口：",
+                    "供微信小程序远程访问账本（数据存 Cloudflare D1，经你的 Worker 域名访问）。 当前对外端口："
+                  );
+                }
+              }
+            }
+            var chains = document.querySelectorAll(".key-flow-chain");
+            for (var c = 0; c < chains.length; c++) {
+              if ((chains[c].textContent || "").indexOf("NAS") !== -1) {
+                chains[c].textContent = "";
+                chains[c].appendChild(document.createTextNode("微信小程序 → 你的 Cloudflare Worker（唯一存储）"));
+              }
+            }
+
+            // 3. 「绑定手机号」按钮：挂在「账户」面板里，点击打开登录/注册面板
+            if (sec && !document.getElementById("__bindPhone")) {
+              var btn = document.createElement("button");
+              btn.id = "__bindPhone";
+              btn.className = "button";
+              btn.style.cssText = "width:100%;margin-top:10px;justify-content:center;height:38px;font-size:13px";
+              btn.textContent = logged ? "绑定其他手机号 / 账号管理" : "绑定手机号（登录 / 注册）";
+              btn.onclick = function () {
+                pill.click();
+              };
+              sec.appendChild(btn);
+            }
+
+            if (sec && chains.length) done = true;
+          }
+
+          var start = function () {
+            patch();
+            var timer = setInterval(function () {
+              if (done) { clearInterval(timer); return; }
+              patch();
+            }, 500);
+          };
+
+          if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", start);
+          } else {
+            start();
           }
         }
 
