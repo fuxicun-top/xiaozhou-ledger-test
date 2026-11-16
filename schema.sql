@@ -8,6 +8,15 @@ CREATE TABLE IF NOT EXISTS accounts (
   created_at TEXT NOT NULL
 );
 
+-- Web 账号（手机号 + 密码）：注册/登录发 JWT，数据存 user:<phone> 作用域。
+-- 这是主要账号体系；上方 accounts（PIN）为旧体系遗留，仅供历史数据兼容。
+CREATE TABLE IF NOT EXISTS users (
+  phone TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS device_bindings (
   device_id TEXT PRIMARY KEY,
   phone TEXT NOT NULL,

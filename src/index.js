@@ -148,78 +148,164 @@ async function hashPin(pin, salt) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 密码哈希 / JWT（Web 账号体系：手机号 + 密码）                        */
+/* ------------------------------------------------------------------ */
+
+/** 密码哈希：盐 + 迭代 HMAC（与 PIN 同一套原语，2000 轮）。 */
+async function hashPassword(password, salt) {
+  let h = await hmacSha256Hex(password, `${salt}:init`);
+  for (let i = 0; i < 2000; i++) {
+    h = await hmacSha256Hex(password, `${salt}:${i}`);
+  }
+  return h;
+}
+
+function b64url(bytes) {
+  let s = '';
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64urlJson(obj) {
+  return b64url(new TextEncoder().encode(JSON.stringify(obj)));
+}
+
+async function jwtSign(payload, secret) {
+  const enc = b64urlJson({ alg: 'HS256', typ: 'JWT' });
+  const head = `${enc}.${b64urlJson(payload)}`;
+  const sig = b64url(
+    new Uint8Array(await hmacSha256Raw(secret, head))
+  );
+  return `${head}.${sig}`;
+}
+
+async function jwtVerify(token, secret) {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3) return null;
+  const expected = b64url(new Uint8Array(await hmacSha256Raw(secret, `${parts[0]}.${parts[1]}`)));
+  if (expected !== parts[2]) return null;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(
+      Uint8Array.from(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0))
+    ));
+    const now = Math.floor(Date.now() / 1000);
+    if (typeof payload.exp === 'number' && payload.exp < now) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+async function hmacSha256Raw(keyText, message) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(keyText),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  return crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message));
+}
+
+/** 取 Worker 的 JWT 密钥：Secret JWT_SECRET 优先，未设置时回退到内置默认值（部署者可在控制台设置自己的）。 */
+function jwtSecret(env) {
+  return env.JWT_SECRET || 'xiaozhou-ledger-web-default-jwt-secret';
+}
+
+const JWT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 天
+
+
+/* ------------------------------------------------------------------ */
 /* 身份解析                                                            */
 /* ------------------------------------------------------------------ */
 
 async function resolveIdentity(request, env) {
   const deviceId = getDeviceId(request);
-  const phoneRaw = (request.headers.get('X-Ledger-Phone') || '').trim();
-  const phone = /^\d{5,20}$/.test(phoneRaw) ? phoneRaw : null;
 
   let account = null;
   let viaKey = false;
 
-  if (phone) {
+  // ① Web 账号 JWT（Authorization: Bearer 或 X-Ledger-Auth）：校验签名与有效期
+  const authHeader = (request.headers.get('Authorization') || '').trim();
+  const bearer = /^Bearer\s+(.+)$/i.exec(authHeader);
+  const jwt = (bearer ? bearer[1] : (request.headers.get('X-Ledger-Auth') || '').trim());
+  if (jwt) {
+    const payload = await jwtVerify(jwt, jwtSecret(env));
+    if (payload && validPhone(payload.phone)) {
+      return {
+        deviceId,
+        phone: payload.phone,
+        name: payload.name || null,
+        account: `user:${payload.phone}`,
+        viaKey: false,
+        isPhone: true,
+        viaJwt: true,
+      };
+    }
+    // JWT 无效：若是 Bearer 携带，再给它一次机会按旧接口密钥处理；都不行则拒绝（不降级游客）
+    if (bearer) {
+      account = await legacyKeyAccount(request, env, bearer[1]);
+      if (account) viaKey = true;
+    }
+    if (!account) {
+      return { deviceId, phone: null, account: null, viaKey: false, isPhone: false, jwtInvalid: true };
+    }
+  }
+
+  // ② 旧 PIN 体系（X-Ledger-Phone + PIN）：遗留数据兼容，数据存 phone:<phone>
+  const phoneRaw = (request.headers.get('X-Ledger-Phone') || '').trim();
+  const phone = /^\d{5,20}$/.test(phoneRaw) ? phoneRaw : null;
+  if (!account && phone) {
     const exists = await env.DB.prepare('SELECT 1 AS x FROM accounts WHERE phone = ?')
       .bind(phone)
       .first();
     account = exists ? `phone:${phone}` : null;
   }
 
+  // ③ 小程序/客户端接口密钥（X-Api-Key / X-Token）
   if (!account) {
     const apiKey = getApiKeyHeader(request);
     if (apiKey) {
-      let row = await env.DB.prepare('SELECT phone FROM account_keys WHERE key = ?')
-        .bind(apiKey)
-        .first();
-      if (row) {
-        account = `phone:${row.phone}`;
-        viaKey = true;
-      } else {
-        row = await env.DB.prepare('SELECT device_id FROM device_settings WHERE api_key = ?')
-          .bind(apiKey)
-          .first();
-        if (row && row.device_id) {
-          const b = await env.DB.prepare('SELECT phone FROM device_bindings WHERE device_id = ?')
-            .bind(row.device_id)
-            .first();
-          account = b ? `phone:${b.phone}` : `dev:${row.device_id}`;
-          viaKey = true;
-        }
-      }
+      account = await legacyKeyAccount(request, env, apiKey);
+      if (account) viaKey = true;
     }
   }
 
+  // ④ 游客设备：dev:<deviceId>
   if (!account && deviceId) {
-    const b = await env.DB.prepare('SELECT phone FROM device_bindings WHERE device_id = ?')
-      .bind(deviceId)
-      .first();
-    if (b) {
-      // 已绑定设备：该浏览器之前登录过此手机号，等同“记住此设备”，免 PIN。
-      account = `phone:${b.phone}`;
-      viaKey = true;
-    } else {
-      account = `dev:${deviceId}`;
-    }
+    account = `dev:${deviceId}`;
   }
 
   return {
     deviceId,
-    phone,
+    phone: accountPhone(account) || phone,
     account,
     viaKey,
-    isPhone: Boolean(account && account.startsWith('phone:') && !viaKey),
+    isPhone: Boolean(account && account.startsWith('user:')),
   };
+}
+
+/** 旧接口密钥 → 账号（user:<phone> / dev:<deviceId>）；无效返回 null。 */
+async function legacyKeyAccount(request, env, apiKey) {
+  const row1 = await env.DB.prepare('SELECT phone FROM account_keys WHERE key = ?')
+    .bind(apiKey)
+    .first();
+  if (row1) return `user:${row1.phone}`;
+  const row2 = await env.DB.prepare('SELECT device_id FROM device_settings WHERE api_key = ?')
+    .bind(apiKey)
+    .first();
+  if (row2 && row2.device_id) {
+    const b = await env.DB.prepare('SELECT phone FROM device_bindings WHERE device_id = ?')
+      .bind(row2.device_id)
+      .first();
+    return b ? `user:${b.phone}` : `dev:${row2.device_id}`;
+  }
+  return null;
 }
 
 async function ensureIdentity(env, identity) {
   const { deviceId, account } = identity;
-  if (account && account.startsWith('phone:')) {
-    if (deviceId) {
-      await env.DB.prepare('INSERT OR IGNORE INTO device_bindings (device_id, phone, created_at) VALUES (?, ?, ?)')
-        .bind(deviceId, account.slice(6), nowIso())
-        .run();
-    }
+  if (account && (account.startsWith('user:') || account.startsWith('phone:'))) {
     await env.DB.prepare('INSERT OR IGNORE INTO account_settings (account) VALUES (?)')
       .bind(account)
       .run();
@@ -247,71 +333,134 @@ function accOf(identity) {
   return identity.account;
 }
 
+/** 账号手机号：user:<phone>（新体系）或 phone:<phone>（旧 PIN 体系遗留数据）。 */
+function accountPhone(account) {
+  if (!account) return null;
+  if (account.startsWith('user:') || account.startsWith('phone:')) return account.slice(5 + 1);
+  return null;
+}
+
+/** 游客设备号：dev:<deviceId>。 */
+function accountDevice(account) {
+  if (account && account.startsWith('dev:')) return account.slice(4);
+  return null;
+}
+
 /* ------------------------------------------------------------------ */
-/* 账号：注册 / 登录 / 恢复码 / 重置 PIN / 解绑设备                    */
+/* 账号：注册 / 登录（手机号 + 密码，JWT）/ 管理员操作                  */
 /* ------------------------------------------------------------------ */
 
 function validPhone(phone) {
   return /^\d{5,20}$/.test(phone);
 }
 
-function validPin(pin) {
-  return /^\d{4,16}$/.test(pin);
+// 登录防爆破（内存级，Worker 实例内有效；重启即清空，属临时缓解而非持久化封禁）：
+// 同一手机号 10 分钟失败 20 次 → 封禁 5 分钟。
+const loginFailures = new Map(); // phone -> { n, first, blockedUntil }
+const LOGIN_MAX_FAILS = 20;
+const LOGIN_FAIL_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_BLOCK_MS = 5 * 60 * 1000;
+
+function loginLocked(phone) {
+  const rec = loginFailures.get(phone);
+  if (!rec) return false;
+  const now = Date.now();
+  if (rec.blockedUntil && now < rec.blockedUntil) return true;
+  if (now - rec.first > LOGIN_FAIL_WINDOW_MS) {
+    loginFailures.delete(phone);
+    return false;
+  }
+  return false;
+}
+
+function recordLoginFail(phone) {
+  const now = Date.now();
+  let rec = loginFailures.get(phone);
+  if (!rec || now - rec.first > LOGIN_FAIL_WINDOW_MS) {
+    rec = { n: 0, first: now, blockedUntil: 0 };
+  }
+  rec.n += 1;
+  if (rec.n >= LOGIN_MAX_FAILS) rec.blockedUntil = now + LOGIN_BLOCK_MS;
+  loginFailures.set(phone, rec);
+  if (loginFailures.size > 500) {
+    const oldest = [...loginFailures.entries()].sort((a, b) => a[1].first - b[1].first)[0];
+    if (oldest) loginFailures.delete(oldest[0]);
+  }
+}
+
+function clearLoginFails(phone) {
+  loginFailures.delete(phone);
+}
+
+function validPassword(password) {
+  return typeof password === 'string' && password.length >= 8 && password.length <= 32;
+}
+
+/** 旧 PIN 体系校验（仅用于 phone: 遗留账号访问；新体系用 JWT）。 */
+async function verifyPin(env, phone, pin) {
+  if (!pin) return false;
+  const acc = await env.DB.prepare('SELECT pin_hash FROM accounts WHERE phone = ?')
+    .bind(phone)
+    .first();
+  if (!acc) return false;
+  const [salt, hash] = String(acc.pin_hash).split('|');
+  const computed = await hashPin(pin, salt);
+  return computed === hash;
+}
+
+// 把「某手机号名下」的全部数据并入目标账号（游客 / 旧 PIN 账号 / 新用户）
+async function importAccountData(env, fromAccounts, toAccount) {
+  let importedEvents = 0;
+  let importedGifts = 0;
+  for (const from of fromAccounts) {
+    const e = await env.DB.prepare('UPDATE events SET account = ? WHERE account = ?')
+      .bind(toAccount, from)
+      .run();
+    const g = await env.DB.prepare('UPDATE gifts SET account = ? WHERE account = ?')
+      .bind(toAccount, from)
+      .run();
+    importedEvents += (e.meta && e.meta.changes) || 0;
+    importedGifts += (g.meta && g.meta.changes) || 0;
+  }
+  return { importedEvents, importedGifts };
 }
 
 async function handleAccountRegister(request, env, identity, origin) {
   const body = await readJson(request);
   if (!body) return fail('请求内容格式错误', 400, origin);
   const phone = asString(body.phone, 20).trim();
-  const pin = asString(body.pin, 20).trim();
+  const name = asString(body.name, 32).trim() || '账本用户';
+  const password = asString(body.password, 64);
   if (!validPhone(phone)) return fail('请输入正确的手机号', 400, origin);
-  if (!validPin(pin)) return fail('PIN 需为 4-16 位数字', 400, origin);
+  if (!validPassword(password)) return fail('密码需为 8-32 位', 400, origin);
 
-  const exists = await env.DB.prepare('SELECT 1 AS x FROM accounts WHERE phone = ?')
+  const userAccount = `user:${phone}`;
+  const exists = await env.DB.prepare('SELECT 1 AS x FROM users WHERE phone = ?')
     .bind(phone)
     .first();
-  if (exists && !body.force) {
-    return fail('该手机号已注册，请直接登录。忘记 PIN 可联系管理员重置；也可重新注册该手机号（将清空名下全部数据）', 409, origin);
-  }
-
-  if (exists && body.force) {
-    // 重新注册：清空该手机号账号名下全部数据，重建账号
-    const account = `phone:${phone}`;
-    await env.DB.prepare('DELETE FROM events WHERE account = ?').bind(account).run();
-    await env.DB.prepare('DELETE FROM gifts WHERE account = ?').bind(account).run();
-    await env.DB.prepare('DELETE FROM account_settings WHERE account = ?').bind(account).run();
-    await env.DB.prepare('DELETE FROM account_keys WHERE phone = ?').bind(phone).run();
-    await env.DB.prepare('DELETE FROM device_bindings WHERE phone = ?').bind(phone).run();
-    await env.DB.prepare('DELETE FROM accounts WHERE phone = ?').bind(phone).run();
-  }
+  if (exists) return fail('该手机号已注册，请直接登录', 409, origin);
 
   const salt = crypto.randomUUID();
-  const pinHash = `${salt}|${await hashPin(pin, salt)}`;
-
-  const account = `phone:${phone}`;
-  await env.DB.prepare('INSERT INTO accounts (phone, pin_hash, created_at) VALUES (?, ?, ?)')
-    .bind(phone, pinHash, nowIso())
+  const passwordHash = `${salt}|${await hashPassword(password, salt)}`;
+  await env.DB.prepare('INSERT INTO users (phone, name, password_hash, created_at) VALUES (?, ?, ?, ?)')
+    .bind(phone, name, passwordHash, nowIso())
     .run();
   await env.DB.prepare('INSERT OR IGNORE INTO account_settings (account) VALUES (?)')
-    .bind(account)
+    .bind(userAccount)
     .run();
 
-  // 把当前浏览器的游客数据并入手机号账号
-  let importEvents = 0;
-  let importGifts = 0;
-  const guestAcc = identity.deviceId ? `dev:${identity.deviceId}` : null;
-  if (body.importDevice && guestAcc) {
-    const g1 = await env.DB.prepare('UPDATE events SET account = ? WHERE account = ?')
-      .bind(account, guestAcc)
-      .run();
-    const g2 = await env.DB.prepare('UPDATE gifts SET account = ? WHERE account = ?')
-      .bind(account, guestAcc)
-      .run();
-    importEvents = (g1.meta && g1.meta.changes) || 0;
-    importGifts = (g2.meta && g2.meta.changes) || 0;
+  // 首次注册：把 ① 本浏览器游客数据 ② 旧 PIN 账号（accounts 表）数据 并入新账号
+  let importedEvents = 0;
+  let importedGifts = 0;
+  if (body.importDevice !== false) {
+    const froms = [
+      identity.deviceId ? `dev:${identity.deviceId}` : null,
+      `phone:${phone}`,
+    ].filter(Boolean);
+    ({ importedEvents, importedGifts } = await importAccountData(env, froms, userAccount));
   }
 
-  // 遗留的设备接口密钥并入账号密钥
+  // 遗留设备接口密钥并入账号密钥
   if (identity.deviceId) {
     const legacy = await env.DB.prepare('SELECT api_key, api_port FROM device_settings WHERE device_id = ?')
       .bind(identity.deviceId)
@@ -327,72 +476,81 @@ async function handleAccountRegister(request, env, identity, origin) {
     }
   }
 
-  if (identity.deviceId) {
-    await env.DB.prepare('INSERT OR IGNORE INTO device_bindings (device_id, phone, created_at) VALUES (?, ?, ?)')
-      .bind(identity.deviceId, phone, nowIso())
-      .run();
-  }
+  // 旧 PIN 账号（accounts 表）数据已并入，停用旧体系：删除 PIN 账号与其设备绑定，
+  // 之后该手机号只能走新体系（user: 账号 + JWT）
+  await env.DB.prepare('DELETE FROM device_bindings WHERE phone = ?').bind(phone).run();
+  await env.DB.prepare('DELETE FROM accounts WHERE phone = ?').bind(phone).run();
 
+  const now = Math.floor(Date.now() / 1000);
+  const token = await jwtSign(
+    { phone, name, iat: now, exp: now + JWT_TTL_SECONDS },
+    jwtSecret(env)
+  );
   return jsonRes(
     {
       phone,
+      name,
       registered: true,
-      force: Boolean(exists && body.force),
-      importedEvents: importEvents,
-      importedGifts: importGifts,
+      token,
+      importedEvents,
+      importedGifts,
       hint:
-        exists && body.force
-          ? '已重新注册，该手机号原有数据已全部清空'
-          : importEvents + importGifts > 0
-            ? '本浏览器已有数据已并入账号'
-            : '注册成功，请牢记 PIN',
+        importedEvents + importedGifts > 0
+          ? '已有数据已并入账号'
+          : '注册成功，7 天内无需重复登录',
     },
     200,
     origin
   );
 }
 
-async function verifyPin(env, phone, pin) {
-  const acc = await env.DB.prepare('SELECT pin_hash FROM accounts WHERE phone = ?')
-    .bind(phone)
-    .first();
-  if (!acc) return false;
-  // pin_hash 存储格式：salt|hash
-  const [salt, hash] = String(acc.pin_hash).split('|');
-  const computed = await hashPin(pin, salt);
-  return computed === hash;
-}
-
 async function handleAccountLogin(request, env, origin) {
   const body = await readJson(request);
   if (!body) return fail('请求内容格式错误', 400, origin);
   const phone = asString(body.phone, 20).trim();
-  const pin = asString(body.pin, 20).trim();
+  const password = asString(body.password, 64);
   if (!validPhone(phone)) return fail('请输入正确的手机号', 400, origin);
 
-  const acc = await env.DB.prepare('SELECT 1 AS x FROM accounts WHERE phone = ?')
+  if (loginLocked(phone)) {
+    return fail('尝试过于频繁，请 5 分钟后再试或联系管理员重置密码', 429, origin);
+  }
+
+  const user = await env.DB.prepare('SELECT * FROM users WHERE phone = ?')
     .bind(phone)
     .first();
-  if (!acc) return fail('该手机号未注册，请切换到注册', 404, origin);
+  if (!user) {
+    recordLoginFail(phone);
+    return fail('该手机号未注册，请切换到注册', 404, origin);
+  }
 
-  const ok = await verifyPin(env, phone, pin);
-  if (!ok) return fail('PIN 不正确', 403, origin);
+  const [salt, stored] = String(user.password_hash).split('|');
+  const computed = await hashPassword(password, salt);
+  if (computed !== stored) {
+    recordLoginFail(phone);
+    return fail('手机号或密码不正确', 403, origin);
+  }
+  clearLoginFails(phone);
 
-  return jsonRes({ phone, loggedIn: true }, 200, origin);
+  const now = Math.floor(Date.now() / 1000);
+  const token = await jwtSign(
+    { phone, name: user.name, iat: now, exp: now + JWT_TTL_SECONDS },
+    jwtSecret(env)
+  );
+  return jsonRes({ phone, name: user.name, loggedIn: true, token }, 200, origin);
 }
 
 async function handleAccountCheck(request, env, origin) {
   const url = new URL(request.url);
   const phone = url.searchParams.get('phone') || '';
   if (!validPhone(phone)) return fail('请输入手机号', 400, origin);
-  const acc = await env.DB.prepare('SELECT 1 AS x FROM accounts WHERE phone = ?')
+  const user = await env.DB.prepare('SELECT 1 AS x FROM users WHERE phone = ?')
     .bind(phone)
     .first();
-  return jsonRes({ phone, registered: Boolean(acc) }, 200, origin);
+  return jsonRes({ phone, registered: Boolean(user) }, 200, origin);
 }
 
 // 忘记 PIN：管理员重置（部署者在 Cloudflare 控制台设置 ADMIN_KEY 密钥）
-async function handleAdminResetPin(request, env, origin) {
+async function handleAdminResetPassword(request, env, origin) {
   const body = await readJson(request);
   if (!body) return fail('请求内容格式错误', 400, origin);
   const adminKey = (request.headers.get('X-Admin-Key') || '').trim();
@@ -400,22 +558,22 @@ async function handleAdminResetPin(request, env, origin) {
     return fail('管理员密钥无效', 403, origin);
   }
   const phone = asString(body.phone, 20).trim();
-  const newPin = asString(body.pin, 20).trim();
+  const newPassword = asString(body.password, 64);
   if (!validPhone(phone)) return fail('请输入正确的手机号', 400, origin);
-  if (!validPin(newPin)) return fail('PIN 需为 4-16 位数字', 400, origin);
-  const acc = await env.DB.prepare('SELECT 1 AS x FROM accounts WHERE phone = ?')
+  if (!validPassword(newPassword)) return fail('密码需为 8-32 位', 400, origin);
+  const user = await env.DB.prepare('SELECT 1 AS x FROM users WHERE phone = ?')
     .bind(phone)
     .first();
-  if (!acc) return fail('该手机号未注册', 404, origin);
+  if (!user) return fail('该手机号未注册', 404, origin);
   const salt = crypto.randomUUID();
-  const pinHash = `${salt}|${await hashPin(newPin, salt)}`;
-  await env.DB.prepare('UPDATE accounts SET pin_hash = ? WHERE phone = ?')
-    .bind(pinHash, phone)
+  const passwordHash = `${salt}|${await hashPassword(newPassword, salt)}`;
+  await env.DB.prepare('UPDATE users SET password_hash = ? WHERE phone = ?')
+    .bind(passwordHash, phone)
     .run();
   return jsonRes({ phone, reset: true }, 200, origin);
 }
 
-// 忘记 PIN：删除账号并清空其名下全部数据（之后可重新注册，PIN 自设）
+// 清空账号：删除用户及名下全部数据（user: 新账号 + phone: 旧 PIN 账号）
 async function handleAdminPurge(request, env, origin) {
   const body = await readJson(request);
   if (!body) return fail('请求内容格式错误', 400, origin);
@@ -425,28 +583,28 @@ async function handleAdminPurge(request, env, origin) {
   }
   const phone = asString(body.phone, 20).trim();
   if (!validPhone(phone)) return fail('请输入正确的手机号', 400, origin);
-  const acc = await env.DB.prepare('SELECT 1 AS x FROM accounts WHERE phone = ?')
-    .bind(phone)
-    .first();
-  if (!acc) return fail('该手机号未注册', 404, origin);
-  const account = `phone:${phone}`;
-  await env.DB.prepare('DELETE FROM events WHERE account = ?').bind(account).run();
-  await env.DB.prepare('DELETE FROM gifts WHERE account = ?').bind(account).run();
-  await env.DB.prepare('DELETE FROM account_settings WHERE account = ?').bind(account).run();
+  for (const account of [`user:${phone}`, `phone:${phone}`]) {
+    await env.DB.prepare('DELETE FROM events WHERE account = ?').bind(account).run();
+    await env.DB.prepare('DELETE FROM gifts WHERE account = ?').bind(account).run();
+    await env.DB.prepare('DELETE FROM account_settings WHERE account = ?').bind(account).run();
+  }
   await env.DB.prepare('DELETE FROM account_keys WHERE phone = ?').bind(phone).run();
   await env.DB.prepare('DELETE FROM device_bindings WHERE phone = ?').bind(phone).run();
+  await env.DB.prepare('DELETE FROM users WHERE phone = ?').bind(phone).run();
   await env.DB.prepare('DELETE FROM accounts WHERE phone = ?').bind(phone).run();
   return jsonRes({ phone, purged: true }, 200, origin);
 }
 
 async function handleAccountUnbindDevice(request, env, identity, origin) {
-  if (!identity.isPhone || !identity.deviceId) return fail('未登录或无设备标识', 401, origin);
-  const pin = (request.headers.get('X-Ledger-Pin') || '').trim();
-  const ok = await verifyPin(env, identity.phone, pin);
-  if (!ok) return fail('PIN 不正确', 403, origin);
-  await env.DB.prepare('DELETE FROM device_bindings WHERE device_id = ? AND phone = ?')
-    .bind(identity.deviceId, identity.phone)
-    .run();
+  // 登出/退出：只清除本地登录态。Web 账号的"信任本设备"即 JWT（localStorage 存了 7 天），
+  // 清掉即退出；设备密钥/绑定关系保留，便于再次登录免输密码前快速恢复。
+  const phone = accountPhone(identity.account);
+  if (!identity.deviceId) return fail('无设备标识', 400, origin);
+  if (phone) {
+    await env.DB.prepare('DELETE FROM device_bindings WHERE device_id = ? AND phone = ?')
+      .bind(identity.deviceId, phone)
+      .run();
+  }
   return jsonRes({ unbound: true }, 200, origin);
 }
 
@@ -455,27 +613,28 @@ async function handleAccountUnbindDevice(request, env, identity, origin) {
 /* ------------------------------------------------------------------ */
 
 async function handleSession(env, identity, origin) {
-  const { account, phone, isPhone } = identity;
+  const { account, phone, isPhone, name } = identity;
   let username = '访客';
-  let auth = { loggedIn: false, guest: true, newPhone: false };
+  let auth = { loggedIn: false, guest: true };
 
   if (isPhone) {
-    username = maskPhone(phone);
-    auth = { loggedIn: true, phone, guest: false };
-  } else if (phone) {
-    // 传了手机号但未注册
-    auth = { loggedIn: false, phone, guest: false, newPhone: true };
+    username = name || maskPhone(phone);
+    auth = { loggedIn: true, phone, guest: false, name: name || null };
+  } else if (account && account.startsWith('phone:')) {
+    // 旧 PIN 体系遗留身份
+    username = maskPhone(account.slice(6));
+    auth = { loggedIn: true, phone: account.slice(6), guest: false };
   }
 
   return jsonRes(
     {
       username,
       uid: account ? account : `dev-${(identity.deviceId || '').slice(0, 8)}`,
-      mode: 'dev',
+      mode: 'cloud',
       gateway: {
         configured: true,
-        loggedIn: isPhone,
-        error: isPhone ? '' : '未登录手机号账号',
+        loggedIn: isPhone || Boolean(account && account.startsWith('phone:')),
+        error: isPhone || account ? '' : '未登录账号',
       },
       // 网页版由自建 Worker 提供完整功能，直接视为已开通永久版。
       membership: { lifetime: true, priceFen: 1990 },
@@ -1097,12 +1256,12 @@ async function callChat(baseUrl, apiKey, model, messages, maxTokens) {
 }
 
 async function getAiSettings(env, account) {
-  if (account.startsWith('phone:')) {
+  if (account.startsWith('user:') || account.startsWith('phone:')) {
     return env.DB.prepare('SELECT * FROM account_settings WHERE account = ?')
       .bind(account)
       .first();
   }
-  const deviceId = account.slice(4);
+  const deviceId = accountDevice(account);
   return env.DB.prepare('SELECT * FROM device_settings WHERE device_id = ?')
     .bind(deviceId)
     .first();
@@ -1140,7 +1299,7 @@ async function handleAiConfigSave(request, env, account, origin) {
     { role: 'user', content: '请只回复两个字：正常' },
   ]);
 
-  if (account.startsWith('phone:')) {
+  if (account.startsWith('user:') || account.startsWith('phone:')) {
     await env.DB.prepare(
       'UPDATE account_settings SET ai_base_url = ?, ai_api_key = ?, ai_model = ? WHERE account = ?'
     )
@@ -1150,7 +1309,7 @@ async function handleAiConfigSave(request, env, account, origin) {
     await env.DB.prepare(
       'UPDATE device_settings SET ai_base_url = ?, ai_api_key = ?, ai_model = ? WHERE device_id = ?'
     )
-      .bind(baseUrl, apiKey, model, account.slice(4))
+      .bind(baseUrl, apiKey, model, accountDevice(account))
       .run();
   }
 
@@ -1299,8 +1458,8 @@ async function handleApiKeyGet(env, account, origin) {
   let port = 0;
   let createdAt = '';
 
-  if (account.startsWith('phone:')) {
-    const phone = account.slice(6);
+  if (account.startsWith('user:') || account.startsWith('phone:')) {
+    const phone = accountPhone(account);
     const row = await env.DB.prepare(
       'SELECT key, port, created_at FROM account_keys WHERE phone = ? ORDER BY created_at DESC LIMIT 1'
     )
@@ -1314,7 +1473,7 @@ async function handleApiKeyGet(env, account, origin) {
     }
   } else {
     const legacy = await env.DB.prepare('SELECT api_key, api_port FROM device_settings WHERE device_id = ?')
-      .bind(account.slice(4))
+      .bind(accountDevice(account))
       .first();
     if (legacy && legacy.api_key) {
       configured = true;
@@ -1331,14 +1490,14 @@ async function handleApiKeyRotate(env, account, origin) {
   const bytes = crypto.getRandomValues(new Uint8Array(24));
   const key = `gl_${[...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
 
-  if (account.startsWith('phone:')) {
-    const phone = account.slice(6);
+  if (account.startsWith('user:') || account.startsWith('phone:')) {
+    const phone = accountPhone(account);
     await env.DB.prepare('DELETE FROM account_keys WHERE phone = ?').bind(phone).run();
     await env.DB.prepare('INSERT INTO account_keys (key, phone, port, created_at) VALUES (?, ?, 0, ?)')
       .bind(key, phone, nowIso())
       .run();
   } else {
-    const deviceId = account.slice(4);
+    const deviceId = accountDevice(account);
     await env.DB.prepare(
       'UPDATE device_settings SET api_key = ?, api_key_hash = ?, api_key_created_at = ? WHERE device_id = ?'
     )
@@ -1357,13 +1516,13 @@ async function handleApiKeyPort(request, env, account, origin) {
     port = Number.parseInt(raw, 10);
     if (!Number.isFinite(port) || port < 1 || port > 65535) return fail('端口需为 1-65535 的数字', 400, origin);
   }
-  if (account.startsWith('phone:')) {
+  if (account.startsWith('user:') || account.startsWith('phone:')) {
     await env.DB.prepare('UPDATE account_keys SET port = ? WHERE phone = ?')
-      .bind(port, account.slice(6))
+      .bind(port, accountPhone(account))
       .run();
   } else {
     await env.DB.prepare('UPDATE device_settings SET api_port = ? WHERE device_id = ?')
-      .bind(port, account.slice(4))
+      .bind(port, accountDevice(account))
       .run();
   }
   return jsonRes({ apiPort: port }, 200, origin);
@@ -1640,9 +1799,9 @@ export default {
       if (path === '/api/account/check' && request.method === 'GET') {
         return handleAccountCheck(request, env, origin);
       }
-      // 忘记 PIN：管理员重置 / 清空账号（需 X-Admin-Key 与 env.ADMIN_KEY 匹配）
-      if (path === '/api/admin/reset-pin' && request.method === 'POST') {
-        return handleAdminResetPin(request, env, origin);
+      // 忘记 PIN/密码：管理员重置（新体系密码）/ 清空账号（需 X-Admin-Key 与 env.ADMIN_KEY 匹配）
+      if (path === '/api/admin/reset-password' && request.method === 'POST') {
+        return handleAdminResetPassword(request, env, origin);
       }
       if (path === '/api/admin/purge-account' && request.method === 'POST') {
         return handleAdminPurge(request, env, origin);
@@ -1652,7 +1811,7 @@ export default {
       if (!identity.account) {
         return fail('未登录或接口密钥无效', 401, origin);
       }
-      // 手机号账号：无接口密钥时必须校验 PIN（X-Ledger-Pin）。
+      // 旧 PIN 体系账号（phone:）访问需继续校验 PIN（X-Ledger-Pin）；新体系（user:）靠 JWT。
       if (identity.account.startsWith('phone:') && !identity.viaKey) {
         const pin = (request.headers.get('X-Ledger-Pin') || '').trim();
         const ok = await verifyPin(env, identity.phone, pin);

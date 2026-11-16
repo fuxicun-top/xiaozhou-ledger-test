@@ -33,3 +33,11 @@ UPDATE events SET account = 'dev:' || device_id WHERE account = '' AND device_id
 UPDATE gifts SET account = 'dev:' || device_id WHERE account = '' AND device_id <> '';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_account_type_date ON events(account, type, date);
 CREATE INDEX IF NOT EXISTS idx_gifts_account_date ON gifts(account, date);
+
+-- Web 账号体系（手机号 + 密码，JWT 登录）
+CREATE TABLE IF NOT EXISTS users (
+  phone TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
