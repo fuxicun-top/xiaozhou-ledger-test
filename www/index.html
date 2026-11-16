@@ -207,10 +207,7 @@
           // 设置页「账户」面板的入口（替代原悬浮按钮）：
           // 未登录 → 打开注册；已登录 → 打开账号管理面板（切换 / 退出）
           var openAccountPanel = function () {
-            var hasLogin = getLoginPhone() && getLoginPin();
-            var go = $("#lg-go");
-            delete go.dataset.done;
-            go.textContent = hasLogin ? "登录 / 切换账号" : "注册并登录";
+            var hasLogin = Boolean(getLoginPhone() && getLoginPin());
             if (hasLogin) {
               setMode("login");
               $("#i-phone").value = getLoginPhone();
@@ -221,6 +218,9 @@
               setMode("reg");
               $("#lg-unbind").style.display = "none";
             }
+            var go = $("#lg-go");
+            delete go.dataset.done;
+            go.textContent = hasLogin ? "登录 / 切换账号" : "注册并登录";
             msg("");
             overlay.style.display = "flex";
           };
@@ -335,29 +335,62 @@
         }
 
         function injectLedgerPanel(openPanel) {
-          var done = false;
-
           function textOf(el) {
             return el ? (el.textContent || "").trim() : "";
           }
 
-          function patch() {
-            if (done) return;
+          // 实时登录态（不依赖 buildAuthUI 的局部变量）
+          function isLogged() {
+            return Boolean(getLoginPhone() && getLoginPin());
+          }
 
-            // 1. 「身份与运行状态」面板：修正残留的 NAS/网关文案
-            var sec = null;
+          // 实时登录态（不能引用 buildAuthUI 里的局部变量 isLogged()，跨函数作用域不可见）
+          function isLogged() {
+            return Boolean(getLoginPhone() && getLoginPin());
+          }
+
+          // 找到「身份与运行状态」所在 section（设置页）
+          function findAccountSec() {
             var dts = document.querySelectorAll("dt");
             for (var i = 0; i < dts.length; i++) {
-              if (textOf(dts[i]) === "运行模式") { sec = dts[i].closest("section, .panel"); break; }
+              if (textOf(dts[i]) === "运行模式") return dts[i].closest("section, .panel");
             }
-            if (sec && !sec.dataset.ledgerPatched) {
+            return null;
+          }
+
+          // 把「绑定手机号 / 账号管理」按钮挂进「账户」面板。
+          // React 每次重渲染都会重建 section DOM，注入的按钮会被顶掉——
+          // 这里是幂等的：按钮在、文案没变就不动；被顶掉就立刻补回。
+          function mountButton() {
+            var sec = findAccountSec();
+            if (!sec) return;
+            var btn = document.getElementById("__bindPhone");
+            var label = isLogged() ? "账号管理（切换 / 退出）" : "绑定手机号（登录 / 注册）";
+            if (btn && btn.parentNode === sec && btn.textContent === label) return;
+            if (!btn) {
+              btn = document.createElement("button");
+              btn.id = "__bindPhone";
+              btn.className = "button";
+              btn.style.cssText = "width:100%;margin-top:10px;justify-content:center;height:38px;font-size:13px";
+              btn.onclick = openPanel;
+            }
+            btn.textContent = label;
+            sec.appendChild(btn);
+          }
+
+          // 修正「身份与运行状态」面板里残留的 NAS/网关文案（幂等）
+          function patchAccountText() {
+            var sec = findAccountSec();
+            if (!sec) return;
+            if (!sec.dataset.ledgerPatched) {
               sec.dataset.ledgerPatched = "1";
               var dds = sec.querySelectorAll("dd");
-              if (dds[0]) dds[0].textContent = logged ? maskPhone(getLoginPhone()) : "访客（未绑定手机号）";
+              if (isLogged() && dds[0]) dds[0].textContent = maskPhone(getLoginPhone());
               if (dds[1]) dds[1].textContent = "云端（Cloudflare Worker + D1）";
               if (dds[2]) dds[2].textContent = "数据存储于 Cloudflare D1（随本仓库部署，无需 NAS）";
               var dl = sec.querySelector("dl");
-              if (dl) {
+              if (dl && dl.getAttribute("data-ledger-rows") !== "1") {
+                dl.setAttribute("data-ledger-rows", "1");
                 var addRow = function (k, v) {
                   var row = document.createElement("div");
                   var dt = document.createElement("dt");
@@ -369,11 +402,18 @@
                   dl.appendChild(row);
                 };
                 addRow("运行状态", "在线（/api/health）");
-                addRow("数据隔离", logged ? "按手机号账号隔离，跨设备同步" : "游客模式：按浏览器设备隔离，绑定手机号后跨设备同步");
+                addRow("数据隔离", isLogged() ? "按手机号账号隔离，跨设备同步" : "游客模式：按浏览器设备隔离，绑定手机号后跨设备同步");
               }
             }
+            // 未登录时 React 会把首行重置为「访客」，检测并改回
+            if (!isLogged()) {
+              var d0 = sec.querySelector("dd");
+              if (d0 && d0.textContent.trim() === "访客") d0.textContent = "访客（未绑定手机号）";
+            }
+          }
 
-            // 2. 「接口密钥」面板文案：NAS/内网穿透 → Cloudflare D1（只改文本节点，保留动态端口）
+          // 修正「接口密钥」面板里残留的 NAS 文案（只改文本节点，保留动态端口）
+          function patchKeyText() {
             var subs = document.querySelectorAll(".panel-sub");
             for (var j = 0; j < subs.length; j++) {
               var nodes = subs[j].childNodes;
@@ -393,27 +433,24 @@
                 chains[c].appendChild(document.createTextNode("微信小程序 → 你的 Cloudflare Worker（唯一存储）"));
               }
             }
-
-            // 3. 「绑定手机号」按钮：挂在「账户」面板里，点击打开登录/注册面板
-            if (sec && !document.getElementById("__bindPhone")) {
-              var btn = document.createElement("button");
-              btn.id = "__bindPhone";
-              btn.className = "button";
-              btn.style.cssText = "width:100%;margin-top:10px;justify-content:center;height:38px;font-size:13px";
-              btn.textContent = logged ? "账号管理（切换 / 退出）" : "绑定手机号（登录 / 注册）";
-              btn.onclick = openPanel;
-              sec.appendChild(btn);
-            }
-
-            if (sec && chains.length) done = true;
           }
 
+          // 常驻修补：React 重渲染（路由切换、接口密钥/备份状态变化等）会重建设置页 DOM，
+          // 每次 DOM 变化都幂等检查一遍；不在设置页时查不到目标元素，开销可忽略。
+          var mo = new MutationObserver(function () {
+            mountButton();
+            patchAccountText();
+            patchKeyText();
+          });
+          var appRoot = document.getElementById("root") || document.body;
+          mo.observe(appRoot, { childList: true, subtree: true });
+
           var start = function () {
-            patch();
-            var timer = setInterval(function () {
-              if (done) { clearInterval(timer); return; }
-              patch();
-            }, 500);
+            mountButton();
+            // 定时兜底（防 observer 漏报或首渲染竞态；每次都是幂等检查）
+            setInterval(mountButton, 800);
+            setInterval(patchAccountText, 800);
+            setInterval(patchKeyText, 3000);
           };
 
           if (document.readyState === "loading") {
