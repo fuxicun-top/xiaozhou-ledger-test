@@ -77,19 +77,31 @@
 
 创建后先不部署，下一步设置环境变量。
 
-### 第 4 步：设置环境变量与密钥
+### 第 4 步：配置环境变量与密钥
 
-进入刚创建的 Worker → **Settings → Variables and Secrets → Add**：
+进入刚创建的 Worker → **Settings → Variables and Secrets**。这里有两种存法，按需选：
 
-| 类型 | 名称 | 值 | 是否必填 |
+- **明文 Variable（`Variables` 标签）**：值直接可见、可随时修改，控制台随时回看。适合自用、想随时确认/改值。
+- **加密 Secret（`Encrypted Secrets` 标签）**：更安全，值只在**添加那一刻**显示一次，之后显示为「已加密」无法回看，只能整值覆盖。
+
+> 代码里读的都是 `env.XXX`，Variable 与 Secret 都注入到同一个 `env`，**两种写法功能等价**，选哪种都不影响代码。
+> ⚠️ 改完任何变量/密钥后，**必须触发一次部署**才会应用到正在运行的 Worker：往 GitHub push 一次自动部署，或本地 `npx wrangler deploy`。单纯改后台不部署，运行中仍是旧值。
+
+**要配置的项目：**
+
+| 名称 | 值 | 必填 | 建议存法 |
 | --- | --- | --- | --- |
-| Secret（加密） | `ADMIN_KEY` | 任意长随机串（可用"随机生成"） | **必设**。网页管理后台 `/admin` 和命令行管理接口共用这一把 |
-| Secret（加密） | `JWT_SECRET` | 任意长随机串 | 强烈建议设；不设则用内置默认值，公网有被伪造登录令牌的风险 |
-| Variable（明文） | `MAX_ACCOUNTS` | 数字，如 `100` | 可选。限制可注册账号总数；不设 = 不限 |
-| Variable（明文） | `REGISTER_COOLDOWN_MINUTES` | 数字，如 `60` | 可选。同一设备两次注册的最小间隔分钟；不设 = 不限 |
+| `ADMIN_KEY` | 管理口令。网页管理后台 `/admin` 与命令行管理接口共用这一把 | **必设** | 明文（自用方便回看）或加密（更安全） |
+| `JWT_SECRET` | 登录令牌签名密钥。不设则回退到内置默认值，公网有登录令牌被伪造的风险 | 强烈建议设 | 明文（可回看）或加密（更安全） |
+| `MAX_ACCOUNTS` | 数字，如 `100`。限制可注册账号总数；不设 = 不限 | 可选 | 明文 |
+| `REGISTER_COOLDOWN_MINUTES` | 数字，如 `60`。同一设备两次注册的最小间隔分钟；不设 = 不限 | 可选 | 明文 |
 
-> 最简自用配置：只填 `ADMIN_KEY` + `JWT_SECRET` 即可，其余留空。
-> ⚠️ 备份导出/导入是**明文**的，不需要 `BACKUP_SECRET`（老版本曾需要，现已移除）。
+- **最简自用**：填 `ADMIN_KEY` + `JWT_SECRET` 两个即可，其余留空。
+- **密钥值不要写进本仓库任何文件**（仓库公开，写进去即泄露）：`ADMIN_KEY`、`JWT_SECRET` 都在 **CF 后台**设置（Dash → Worker → Settings → **Encrypted Secrets** → 逐个 Add），值由你自己生成、自己保管。
+  生成一段 64 位随机串：终端跑 `openssl rand -hex 32`，把它填入（`ADMIN_KEY` 用做管理口令、`JWT_SECRET` 用作令牌签名密钥，两者各自生成、别混用）。
+- ⚠️ **公开仓库请务必用加密 Secret**：若改用「明文 Variable」，值写进 CF 后台的 Variables 会被 CI 的 `wrangler deploy` 清掉，只能写进 `wrangler.toml [vars]` 才持久——而那会随仓库公开，等于泄露。故公开仓库选**加密 Secret**（部署不会清、不进 git）。
+- ⚠️ 备份导出/导入是**明文**的，**不需要** `BACKUP_SECRET`（老版本曾需要，现已移除）。
+- ⚠️ **更换 `JWT_SECRET` 会让当前所有用户的登录态全部失效**，需各自重新登录一次（前端会自动清掉失效令牌）。
 
 ### 第 5 步：接 GitHub 自动部署
 

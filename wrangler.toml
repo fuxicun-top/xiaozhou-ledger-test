@@ -14,5 +14,9 @@ binding = "ASSETS"
 not_found_handling = "single-page-application"
 run_worker_first = ["/api/*"]
 
+# 注意：ADMIN_KEY / JWT_SECRET 等敏感变量【不写在 toml】（本仓库公开，提交会泄露）。
+# 它们在 Cloudflare 后台以「加密 Secret」设置（Dash → Worker → Settings → Encrypted Secrets），
+# 详见 README「第 4 步」。wrangler deploy 不会清除后台已设的加密 Secret。
+
 [observability]
 enabled = true
