@@ -11,7 +11,7 @@
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;font-size:14px}
-  .wrap{max-width:960px;margin:0 auto;padding:28px 18px 60px}
+  .wrap{max-width:980px;margin:0 auto;padding:28px 18px 60px}
   header{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
   header h1{margin:0;font-size:22px;font-weight:600}
   header .sub{color:var(--sub);font-size:12px;margin-top:3px}
@@ -28,24 +28,35 @@
   .card .desc{color:var(--sub);font-size:12px;margin:0 0 16px;line-height:1.6}
   .field{margin-bottom:12px}
   .field label{display:block;font-size:12px;color:var(--sub);margin-bottom:5px}
-  .field input{width:100%;max-width:340px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;outline:none}
+  .field input,.field select{width:100%;max-width:340px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;outline:none;background:#fff}
   .field input:focus{border-color:var(--brand)}
+  .field select{cursor:pointer}
+  .inline{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .inline input{padding:8px 11px;border:1px solid var(--line);border-radius:8px;font-size:13px;outline:none;background:#fff}
+  .inline select{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff;cursor:pointer}
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
   .msg{font-size:12px;margin-top:10px;min-height:16px;line-height:1.5}
   .msg.err{color:var(--err)}.msg.ok{color:var(--ok)}.msg.warn{color:var(--warn)}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
   th{color:var(--sub);font-weight:500;font-size:12px}
   td.num{text-align:right}
+  td.wrap{white-space:normal;max-width:280px;word-break:break-all}
   .tag{display:inline-block;padding:2px 8px;border-radius:20px;background:#f3efe9;color:var(--sub);font-size:11px}
   .tag.key{background:#eef5ef;color:var(--ok)}
+  .tag.err{background:#fbeae7;color:var(--err)}
+  .tag.ok{background:#eef5ef;color:var(--ok)}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 14px}
+  .tab{padding:7px 14px;border:1px solid var(--line);background:#fff;border-radius:20px;font-size:13px;cursor:pointer;color:var(--sub)}
+  .tab.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+  .pager{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:14px;font-size:12px;color:var(--sub)}
   .tbl-wrap{overflow-x:auto}
   .actions{display:flex;gap:6px}
   .hidden{display:none!important}
   .toast{position:fixed;left:50%;bottom:30px;transform:translateX(-50%);background:#2b2622;color:#fff;padding:11px 20px;border-radius:10px;font-size:13px;z-index:99;box-shadow:0 8px 30px rgba(0,0,0,.2)}
   a.home{color:var(--brand);text-decoration:none;font-size:13px;cursor:pointer}
   .modal{position:fixed;inset:0;background:rgba(28,24,20,.5);display:flex;align-items:center;justify-content:center;padding:16px;z-index:50}
-  .modal .box{background:#fff;border-radius:14px;padding:22px;width:100%;max-width:380px;box-shadow:0 12px 40px rgba(0,0,0,.2)}
+  .modal .box{background:#fff;border-radius:14px;padding:22px;width:100%;max-width:400px;box-shadow:0 12px 40px rgba(0,0,0,.2);max-height:90vh;overflow:auto}
   .modal h3{margin:0 0 14px;font-size:17px}
 </style>
 </head>
@@ -54,7 +65,7 @@
   <header>
     <div>
       <h1>人情录 · 管理后台</h1>
-      <div class="sub">用户管理 · 全站数据备份与还原</div>
+      <div class="sub">用户管理 · 账号数据编辑 · 单账号导入导出 · 操作日志</div>
     </div>
     <a class="home" href="/">← 返回账本</a>
   </header>
@@ -70,6 +81,7 @@
 
   <!-- 主体 -->
   <div id="main" class="hidden">
+    <!-- ① 用户管理 -->
     <div class="card">
       <div class="row" style="justify-content:space-between">
         <div><h2>注册用户</h2><p class="desc" style="margin:4px 0 0">共 <b id="userTotal">0</b> 个账号。可为任意用户重置密码（忘记密码时）。</p></div>
@@ -86,6 +98,36 @@
       </div>
     </div>
 
+    <!-- ② 账号数据管理（编辑任意用户的数据/配置 + 单账号导入导出） -->
+    <div class="card" id="accountCard">
+      <h2>账号数据管理</h2>
+      <p class="desc">输入用户手机号后载入该账号：分页查看/增删改「礼金」「活动」，编辑「AI/小程序配置」「接口密钥」「设备绑定」，并对该账号做独立的导入与导出。默认每页 20 条。</p>
+      <div class="inline" style="margin-bottom:12px">
+        <input id="acPhone" placeholder="用户手机号，如 13800000000" autocomplete="off" style="width:220px">
+        <button class="btn sm" id="acLoadBtn">载入账号</button>
+        <span class="msg" id="acMsg" style="margin:0"></span>
+      </div>
+      <div id="acBody" class="hidden">
+        <div style="font-size:13px;margin-bottom:6px">当前账号：<b id="acPhoneLabel">—</b></div>
+        <div class="tabs" id="acTabs">
+          <button class="tab active" data-kind="gifts">礼金</button>
+          <button class="tab" data-kind="events">活动</button>
+          <button class="tab" data-kind="config">配置/密钥</button>
+          <button class="tab" data-kind="device">设备</button>
+        </div>
+        <div id="acData"></div>
+        <div id="acConfig" class="hidden"></div>
+        <div class="row" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+          <span style="font-size:13px;color:var(--sub)">单账号导入/导出：</span>
+          <button class="btn ghost sm" id="acExportBtn">导出该账号</button>
+          <label class="btn ghost sm" style="display:inline-block">导入该账号<input type="file" id="acImportFile" accept=".json,application/json" style="display:none"></label>
+          <button class="btn sm" id="acImportBtn" disabled>开始导入</button>
+          <span class="msg" id="acIO" style="margin:0"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ③ 全站备份与还原 -->
     <div class="card">
       <h2>全站备份与还原</h2>
       <p class="desc">导出整个站点（全部用户、账本、配置）为明文 JSON。还原时可选「覆盖」（清空后重建，恢复到备份时的状态）或「合并」（保留现有数据，按主键覆盖同 ID 记录）。</p>
@@ -98,6 +140,27 @@
       <div class="msg" id="backupMsg"></div>
     </div>
 
+    <!-- ④ 全栈操作日志 -->
+    <div class="card" id="logCard">
+      <h2>全栈操作日志</h2>
+      <p class="desc">自动记录所有用户的读写增删改查、配置修改、登录注册、备份等动作（含操作人、结果码、IP）。可按操作人/动作筛选；「清理旧日志」删除 N 天前的记录。</p>
+      <div class="inline" style="margin-bottom:12px">
+        <input id="lgActor" placeholder="操作人，如 138 / admin" autocomplete="off" style="width:160px">
+        <input id="lgAction" placeholder="动作，如 gift.create" autocomplete="off" style="width:170px">
+        <select id="lgLimit"><option value="50">每页 50</option><option value="100">每页 100</option><option value="200">每页 200</option></select>
+        <button class="btn sm" id="lgQueryBtn">查询</button>
+        <button class="btn danger sm" id="lgPurgeBtn">清理旧日志</button>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>方法/路径</th><th class="num">结果</th><th>IP</th><th>备注</th></tr></thead>
+          <tbody id="logRows"></tbody>
+        </table>
+      </div>
+      <div class="pager" id="logPager"></div>
+    </div>
+
+    <!-- 会话 -->
     <div class="card">
       <div class="row" style="justify-content:space-between">
         <div><h2 style="font-size:14px;margin:0">会话</h2><p class="desc" style="margin:2px 0 0">管理员令牌保存在本机浏览器，12 小时有效。</p></div>
@@ -121,6 +184,57 @@
     </div>
   </div>
 </div>
+
+<!-- 活动 增删改 弹窗 -->
+<div class="modal hidden" id="eventModal">
+  <div class="box">
+    <h3 id="evTitle">新增活动</h3>
+    <div class="field"><label>活动类型</label>
+      <select id="evType">
+        <option value="wedding">婚礼</option><option value="baby">满月</option><option value="birthday">生日</option>
+        <option value="housewarming">乔迁</option><option value="graduation">升学</option><option value="funeral">白事</option>
+        <option value="other">其他</option>
+      </select>
+    </div>
+    <div class="field"><label>名称（可留空用类型名）</label><input id="evName" autocomplete="off"></div>
+    <div class="field"><label>日期 YYYY-MM-DD</label><input id="evDate" type="date"></div>
+    <div class="msg" id="evMsg"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:8px">
+      <button class="btn ghost" id="evCancel">取消</button>
+      <button class="btn" id="evSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 礼金 增删改 弹窗 -->
+<div class="modal hidden" id="giftModal">
+  <div class="box">
+    <h3 id="gfTitle">新增礼金</h3>
+    <div class="field"><label>所属活动</label><select id="gfEvent"></select></div>
+    <div class="field"><label>往来对象（必填）</label><input id="gfPerson" autocomplete="off"></div>
+    <div class="inline" style="margin-bottom:12px">
+      <div style="flex:1"><div class="field" style="margin:0"><label>关系</label>
+        <select id="gfRelation"><option>朋友</option><option>亲戚</option><option>同事</option><option>同学</option><option>邻居</option><option>其他</option></select>
+      </div></div>
+      <div style="flex:1"><div class="field" style="margin:0"><label>方向</label>
+        <select id="gfDirection"><option value="out">送出</option><option value="in">收到</option></select>
+      </div></div>
+    </div>
+    <div class="inline" style="margin-bottom:12px">
+      <div style="flex:1"><div class="field" style="margin:0"><label>金额（元）</label><input id="gfAmount" type="number" min="0" step="0.01" autocomplete="off"></div></div>
+      <div style="flex:1"><div class="field" style="margin:0"><label>方式</label>
+        <select id="gfMethod"><option value="cash">现金</option><option value="wechat">微信</option><option value="alipay">支付宝</option><option value="other">其他</option></select>
+      </div></div>
+    </div>
+    <div class="field"><label>日期 YYYY-MM-DD</label><input id="gfDate" type="date"></div>
+    <div class="field"><label>备注（可选）</label><input id="gfNote" autocomplete="off"></div>
+    <div class="msg" id="gfMsg"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:8px">
+      <button class="btn ghost" id="gfCancel">取消</button>
+      <button class="btn" id="gfSave">保存</button>
+    </div>
+  </div>
+</div>
 <div class="toast hidden" id="toast"></div>
 
 <script>
@@ -130,7 +244,8 @@
   function setToken(t){ try{t?localStorage.setItem(TOKEN_KEY,t):localStorage.removeItem(TOKEN_KEY)}catch(e){} }
   function $(id){return document.getElementById(id)}
   function toast(t){var e=$('toast');e.textContent=t;e.classList.remove('hidden');setTimeout(function(){e.classList.add('hidden')},2600)}
-  function msg(id,t,c){var e=$(id);e.textContent=t||'';e.className='msg'+(c?' '+c:'')}
+  function msg(id,t,c){var e=$(id);e.textContent=t||'';e.className='msg'+(c?' '+c:''); if(id==='acMsg'||id==='acIO')e.style.margin='0';}
+  function esc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}
 
   function api(path,method,body,raw){
     var h={'X-Admin-Token':token()};
@@ -146,20 +261,21 @@
   function showLogin(){ $('loginCard').classList.remove('hidden'); $('main').classList.add('hidden'); }
   function showMain(){ $('loginCard').classList.add('hidden'); $('main').classList.remove('hidden'); }
 
+  /* ================= 登录 / 退出 ================= */
   $('lgBtn').onclick=function(){
     var b=this;b.disabled=true;msg('lgMsg','');
     var key=$('lgKey').value.trim();
     if(!key){msg('lgMsg','请输入 ADMIN_KEY','err');b.disabled=false;return;}
-    fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({adminKey:key})})
+    fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({adminKey:key})})
       .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.error||'登录失败');return d})})
-      .then(function(d){ setToken(d.token); $('lgKey').value=''; showMain(); loadUsers(); toast('登录成功'); })
+      .then(function(d){ setToken(d.token); $('lgKey').value=''; showMain(); loadUsers(); loadLogs(); toast('登录成功'); })
       .catch(function(e){msg('lgMsg',e.message,'err')})
       .finally(function(){b.disabled=false});
   };
   $('logoutBtn').onclick=function(){ setToken(''); showLogin(); };
   $('refreshBtn').onclick=function(){loadUsers()};
 
+  /* ================= ① 用户管理 ================= */
   function fmtDate(s){ return s?String(s).replace('T',' ').slice(0,16):'—'; }
   function loadUsers(){
     api('/api/admin/users','GET').then(function(d){
@@ -174,16 +290,13 @@
           '<td class="num">'+u.giftCount+'</td>'+
           '<td>'+(u.hasApiKey?'<span class="tag key">已配置</span>':'<span class="tag">无</span>')+'</td>'+
           '<td><div class="actions">'+
-            '<button class="btn ghost sm" onclick="__edit(\''+u.phone+'\',\''+escAttr(u.name)+'\')">编辑</button>'+
+            '<button class="btn ghost sm" onclick="__edit(\''+u.phone+'\',\''+esc(u.name).replace(/'/g,"\\'")+'\')">编辑</button>'+
             '<button class="btn danger sm" onclick="__del(\''+u.phone+'\')">删除</button>'+
           '</div></td></tr>';
       });
       $('userRows').innerHTML=rows||'<tr><td colspan="7" style="text-align:center;color:#8a8178">暂无用户</td></tr>';
     }).catch(function(e){toast(e.message)});
   }
-  function esc(s){return String(s||'').replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}
-  function escAttr(s){return esc(s).replace(/'/g,"\\'")}
-
   var modalMode='edit';
   function openModal(mode,phone,name){
     modalMode=mode;msg('umMsg','');
@@ -215,6 +328,283 @@
       .finally(function(){b.disabled=false});
   };
 
+  /* ================= ② 账号数据管理 ================= */
+  var acPhone='', acKind='gifts', acPage=1, acEvents=[]; // acEvents 缓存该账号活动（供礼金弹窗选择）
+  var PAGE_SIZE=20;
+
+  $('acLoadBtn').onclick=function(){
+    var ph=$('acPhone').value.trim();
+    if(!ph){msg('acMsg','请输入手机号','err');return;}
+    acPhone=ph;acPage=1;acEvents=[];acKind='gifts';
+    setTabActive('gifts');
+    $('acBody').classList.remove('hidden');
+    $('acPhoneLabel').textContent=ph;
+    renderData(); loadAccountEventsForSelect();
+  };
+  function setTabActive(kind){
+    document.querySelectorAll('#acTabs .tab').forEach(function(t){
+      t.classList.toggle('active',t.getAttribute('data-kind')===kind);
+    });
+  }
+  document.querySelectorAll('#acTabs .tab').forEach(function(t){
+    t.onclick=function(){acKind=t.getAttribute('data-kind');acPage=1;setTabActive(acKind);renderData();};
+  });
+
+  function renderData(){
+    $('acData').classList.toggle('hidden',acKind!=='gifts'&&acKind!=='events');
+    $('acConfig').classList.toggle('hidden',acKind!=='config'&&acKind!=='device');
+    if(acKind==='gifts'||acKind==='events'){ loadAccountPage(acKind); }
+    else if(acKind==='config'){ loadAccountConfig(); }
+    else if(acKind==='device'){ loadAccountDevice(); }
+  }
+
+  function loadAccountPage(kind){
+    var p=new URLSearchParams({phone:acPhone,kind:kind,page:acPage,size:PAGE_SIZE});
+    api('/api/admin/account/data?'+p.toString(),'GET')
+      .then(function(d){
+        var data=d.data||[],total=d.total||0,box=$('acData');
+        var html='<div class="row" style="justify-content:space-between;margin-bottom:10px">'+
+          '<span style="font-size:12px;color:var(--sub)">共 '+total+' 条 · 第 '+(d.page||1)+' 页</span>'+
+          '<button class="btn sm" onclick="__acAdd()">'+(kind==='gifts'?'+ 新增礼金':'+ 新增活动')+'</button></div>';
+        html+='<div class="tbl-wrap"><table><thead><tr>'+
+          (kind==='gifts'
+            ?'<th>对象</th><th>关系</th><th>方向</th><th class="num">金额</th><th>方式</th><th>日期</th><th>备注</th><th>操作</th>'
+            :'<th>名称</th><th>类型</th><th>日期</th><th>创建</th><th>操作</th>')+
+          '</tr></thead><tbody>';
+        var rows=data.map(function(r){
+          if(kind==='gifts'){
+            var evName=(acEvents||[]).filter(function(e){return e.id===r.eventId})[0];
+            return '<tr><td>'+esc(r.person)+'</td><td>'+esc(r.relation)+'</td>'+
+              '<td>'+(r.direction==='in'?'收到':'送出')+'</td>'+
+              '<td class="num">'+(r.amountFen/100).toFixed(2)+'</td>'+
+              '<td>'+esc(r.method)+'</td><td>'+esc(r.date)+'</td><td class="wrap">'+esc(r.note)+'</td>'+
+              '<td><div class="actions">'+
+              '<button class="btn ghost sm" onclick="__acEditGift(\''+esc(r.id).replace(/'/g,"\\'")+'\')">改</button>'+
+              '<button class="btn danger sm" onclick="__acDelGift(\''+esc(r.id).replace(/'/g,"\\'")+'\')">删</button></div></td></tr>';
+          }
+          return '<tr><td>'+esc(r.name)+'</td><td>'+esc(r.type)+'</td><td>'+esc(r.date)+'</td><td>'+fmtDate(r.createdAt)+'</td>'+
+            '<td><div class="actions">'+
+            '<button class="btn ghost sm" onclick="__acEditEvent(\''+esc(r.id).replace(/'/g,"\\'")+'\')">改</button>'+
+            '<button class="btn danger sm" onclick="__acDelEvent(\''+esc(r.id).replace(/'/g,"\\'")+'\')">删</button></div></td></tr>';
+        }).join('');
+        html+=rows+'</tbody></table></div>';
+        html+=pagerHtml(total);
+        box.innerHTML=html||'';
+      })
+      .catch(function(e){$('acData').innerHTML='<div class="msg err">'+esc(e.message)+'</div>'});
+  }
+  function pagerHtml(total){
+    var pages=Math.max(1,Math.ceil(total/PAGE_SIZE));
+    var h='<div class="pager">'+
+      '<button class="btn ghost sm" '+(acPage<=1?'disabled':'')+' onclick="__acPage('+(acPage-1)+')">上一页</button>'+
+      '<span>'+acPage+' / '+pages+'</span>'+
+      '<button class="btn ghost sm" '+(acPage>=pages?'disabled':'')+' onclick="__acPage('+(acPage+1)+')">下一页</button></div>';
+    return h;
+  }
+  window.__acPage=function(n){acPage=Math.max(1,n);loadAccountPage(acKind);};
+
+  function loadAccountEventsForSelect(){
+    api('/api/admin/account/data?'+new URLSearchParams({phone:acPhone,kind:'events',page:1,size:200}).toString(),'GET')
+      .then(function(d){acEvents=d.data||[];}).catch(function(){});
+  }
+
+  /* 活动 增删改 */
+  window.__acEditEvent=function(id){
+    var e=(acEvents||[]).filter(function(x){return x.id===id})[0];
+    openEventModal(e);
+  };
+  window.__acDelEvent=function(id){
+    if(!confirm('删除该活动会同时删除其下全部礼金，确定？'))return;
+    api('/api/admin/account/event/delete','POST',{phone:acPhone,id:id})
+      .then(function(){toast('已删除');acEvents=(acEvents||[]).filter(function(x){return x.id!==id});loadAccountEventsForSelect();loadAccountPage(acKind==='events'?'events':acKind);})
+      .catch(function(e){toast(e.message)});
+  };
+  var evEditId=null;
+  function openEventModal(e){
+    evEditId=e?e.id:null;
+    $('evTitle').textContent=e?'修改活动':'新增活动';
+    $('evType').value=e?e.type:'wedding';
+    $('evName').value=e&&e.name&&e.type!=='other'?e.name:'';
+    $('evDate').value=e?e.date:'';
+    msg('evMsg','');
+    $('eventModal').classList.remove('hidden');
+  }
+  $('evCancel').onclick=function(){$('eventModal').classList.add('hidden')};
+  $('evSave').onclick=function(){
+    var b=this;b.disabled=true;msg('evMsg','');
+    var body={phone:acPhone,type:$('evType').value,name:$('evName').value.trim()||undefined,date:$('evDate').value};
+    if(evEditId)body.id=evEditId;
+    api('/api/admin/account/event','POST',body)
+      .then(function(){ $('eventModal').classList.add('hidden');toast('已保存');acEvents=[];loadAccountEventsForSelect();loadAccountPage(acKind==='events'?'events':acKind); })
+      .catch(function(e){msg('evMsg',e.message,'err')})
+      .finally(function(){b.disabled=false});
+  };
+
+  /* 礼金 增删改 */
+  window.__acEditGift=function(id){
+    var g=null;
+    // 从当前分页 data 无法直接拿到（未缓存），重新查一次该条
+    api('/api/admin/account/data?'+new URLSearchParams({phone:acPhone,kind:'gifts',page:acPage,size:PAGE_SIZE}).toString(),'GET')
+      .then(function(d){
+        var row=(d.data||[]).filter(function(x){return x.id===id})[0];
+        openGiftModal(row||{id:id});
+      }).catch(function(e){toast(e.message)});
+  };
+  window.__acDelGift=function(id){
+    if(!confirm('确定删除这笔礼金？'))return;
+    api('/api/admin/account/gift/delete','POST',{phone:acPhone,id:id})
+      .then(function(){toast('已删除');loadAccountPage(acKind==='gifts'?'gifts':acKind);})
+      .catch(function(e){toast(e.message)});
+  };
+  var gfEditId=null;
+  function fillGiftEventOptions(selectedId){
+    var sel=$('gfEvent'),opts='';
+    (acEvents||[]).forEach(function(e){opts+='<option value="'+e.id+'">'+esc(e.name+'（'+e.type+' '+e.date+'）')+'</option>';});
+    sel.innerHTML=opts||'<option value="">（请先新增活动）</option>';
+    if(selectedId)sel.value=selectedId;
+  }
+  function openGiftModal(g){
+    gfEditId=g?g.id:null;
+    $('gfTitle').textContent=g?'修改礼金':'新增礼金';
+    fillGiftEventOptions(g&&g.eventId?g.eventId:'');
+    $('gfPerson').value=g?g.person:'';
+    $('gfRelation').value=g&&g.relation?g.relation:'朋友';
+    $('gfDirection').value=g&&g.direction?g.direction:'out';
+    $('gfAmount').value=g?String(g.amountFen/100):'';
+    $('gfMethod').value=g&&g.method?g.method:'cash';
+    $('gfDate').value=g?g.date:'';
+    $('gfNote').value=g&&g.note?g.note:'';
+    msg('gfMsg','');
+    $('giftModal').classList.remove('hidden');
+  }
+  // 新增礼金入口：在"礼金"页签点“+ 新增礼金” -> 走 __acAdd，需按 kind 区分
+  // 重新实现 __acAdd 以区分活动/礼金
+  window.__acAdd=function(){
+    if(acKind==='gifts'){ fillGiftEventOptions(''); openGiftModal(null); }
+    else { openEventModal(null); }
+  };
+  $('gfCancel').onclick=function(){$('giftModal').classList.add('hidden')};
+  $('gfSave').onclick=function(){
+    var b=this;b.disabled=true;msg('gfMsg','');
+    var yuan=parseFloat($('gfAmount').value);
+    if(!Number.isFinite(yuan)||yuan<=0){msg('gfMsg','请输入大于 0 的金额','err');b.disabled=false;return;}
+    var amountFen=Math.round(yuan*100);
+    var body={phone:acPhone,eventId:$('gfEvent').value,person:$('gfPerson').value.trim(),
+      relation:$('gfRelation').value,direction:$('gfDirection').value,amountFen:amountFen,
+      method:$('gfMethod').value,date:$('gfDate').value,note:$('gfNote').value.trim()||undefined};
+    if(gfEditId)body.id=gfEditId;
+    api('/api/admin/account/gift','POST',body)
+      .then(function(){ $('giftModal').classList.add('hidden');toast('已保存');loadAccountPage(acKind==='gifts'?'gifts':acKind); })
+      .catch(function(e){msg('gfMsg',e.message,'err')})
+      .finally(function(){b.disabled=false});
+  };
+
+  /* 配置/密钥 */
+  function loadAccountConfig(){
+    var box=$('acConfig');
+    box.innerHTML='<div class="msg warn">载入中…</div>';
+    api('/api/admin/account/data?'+new URLSearchParams({phone:acPhone,kind:'settings'}).toString(),'GET')
+      .then(function(d){
+        var s=d.settings||{},k=d.apikey||{};
+        box.innerHTML=
+          '<h3 style="font-size:14px;margin:0 0 10px">AI / 小程序配置</h3>'+
+          '<div class="field"><label>接口地址（baseUrl）</label><input id="cfBase" value="'+esc(s.baseUrl||'')+'" placeholder="https://…"></div>'+
+          '<div class="inline" style="margin-bottom:12px">'+
+            '<div style="flex:1"><div class="field" style="margin:0"><label>模型</label><input id="cfModel" value="'+esc(s.model||'')+'"></div></div>'+
+            '<div style="flex:1"><div class="field" style="margin:0"><label>API Key（留空则保留原值）</label><input id="cfKey" type="password" autocomplete="off" placeholder="'+(s.hasKey?'已配置（留空不改）':'未配置')+'"></div></div>'+
+          '</div>'+
+          '<div class="row" style="margin-bottom:14px"><button class="btn sm" id="cfSave">保存配置</button><span class="msg" id="cfMsg" style="margin:0"></span></div>'+
+          '<h3 style="font-size:14px;margin:18px 0 10px">小程序接口密钥</h3>'+
+          (k.key?'<div style="font-size:12px;color:var(--sub);margin-bottom:8px">当前密钥：<span style="font-family:monospace">'+esc(k.key)+'</span>'+(k.apiPort?(' · 端口 '+esc(k.apiPort)):'')+'</div>':'<div style="font-size:12px;color:var(--sub);margin-bottom:8px">尚未生成接口密钥。</div>')+
+          '<div class="row" style="flex-wrap:wrap;gap:8px">'+
+            '<button class="btn ghost sm" id="akGet">刷新密钥</button>'+
+            '<button class="btn sm" id="akRotate">重新生成</button>'+
+            '<button class="btn ghost sm" id="akPort">改端口</button>'+
+            '<button class="btn danger sm" id="akClear">清空密钥</button>'+
+            '<input id="akPortInput" placeholder="端口，如 3000" style="width:110px">'+
+            '<span class="msg" id="akMsg" style="margin:0"></span>'+
+          '</div>';
+        $('cfSave').onclick=function(){
+          this.disabled=true;msg('cfMsg','');
+          api('/api/admin/account/settings','POST',{phone:acPhone,baseUrl:$('cfBase').value.trim(),model:$('cfModel').value.trim(),apiKey:$('cfKey').value.trim()})
+            .then(function(){msg('cfMsg','已保存','ok');$('cfKey').value='';})
+            .catch(function(e){msg('cfMsg',e.message,'err')})
+            .finally(function(){this.disabled=false;}.bind($('cfSave')));
+        };
+        $('akRotate').onclick=function(){
+          if(!confirm('重新生成会使旧密钥立即失效，确定？'))return;
+          api('/api/admin/account/apikey','POST',{phone:acPhone,action:'rotate'})
+            .then(function(){toast('已重新生成');loadAccountConfig();})
+            .catch(function(e){toast(e.message)});
+        };
+        $('akGet').onclick=function(){loadAccountConfig();};
+        $('akPort').onclick=function(){
+          var port=$('akPortInput').value.trim();
+          api('/api/admin/account/apikey','POST',{phone:acPhone,action:'port',port:port||undefined})
+            .then(function(){msg('akMsg','端口已更新','ok');})
+            .catch(function(e){msg('akMsg',e.message,'err')});
+        };
+        $('akClear').onclick=function(){
+          if(!confirm('清空该账号的全部接口密钥？'))return;
+          api('/api/admin/account/apikey','POST',{phone:acPhone,action:'clear'})
+            .then(function(){toast('已清空');loadAccountConfig();})
+            .catch(function(e){toast(e.message)});
+        };
+      })
+      .catch(function(e){box.innerHTML='<div class="msg err">'+esc(e.message)+'</div>'});
+  }
+
+  /* 设备绑定 */
+  function loadAccountDevice(){
+    var box=$('acConfig');
+    box.innerHTML='<div class="msg warn">载入中…</div>';
+    api('/api/admin/account/data?'+new URLSearchParams({phone:acPhone,kind:'device'}).toString(),'GET')
+      .then(function(d){
+        var devs=d.devices||[];
+        var html='<h3 style="font-size:14px;margin:0 0 10px">设备绑定（'+devs.length+'）</h3>';
+        if(!devs.length)html+='<div style="font-size:12px;color:var(--sub)">该账号暂无绑定设备。</div>';
+        else{
+          html+='<div class="tbl-wrap"><table><thead><tr><th>设备 ID</th><th>绑定时间</th><th>操作</th></tr></thead><tbody>'+
+            devs.map(function(x){return '<tr><td style="font-family:monospace">'+esc(x.deviceId)+'</td><td>'+fmtDate(x.createdAt)+'</td>'+
+              '<td><button class="btn danger sm" onclick="__acUnbind(\''+esc(x.deviceId).replace(/'/g,"\\'")+'\')">解除绑定</button></td></tr>';}).join('')+
+            '</tbody></table></div>';
+        }
+        box.innerHTML=html;
+      })
+      .catch(function(e){box.innerHTML='<div class="msg err">'+esc(e.message)+'</div>'});
+  }
+  window.__acUnbind=function(deviceId){
+    if(!confirm('解除该设备绑定？'))return;
+    api('/api/admin/account/device','POST',{phone:acPhone,deviceId:deviceId})
+      .then(function(){toast('已解除');loadAccountDevice();})
+      .catch(function(e){toast(e.message)});
+  };
+
+  /* 单账号导入 / 导出 */
+  var acPicked=null;
+  $('acImportFile').onchange=function(){acPicked=this.files[0]||null;$('acImportBtn').disabled=!acPicked;};
+  $('acExportBtn').onclick=function(){
+    if(!acPhone){msg('acIO','请先载入账号','warn');return;}
+    api('/api/admin/account/export?'+new URLSearchParams({phone:acPhone}).toString(),'GET',undefined,true)
+      .then(function(r){return r.blob().then(function(blob){
+        var url=URL.createObjectURL(blob),a=document.createElement('a');
+        a.href=url;a.download='人情录-账号'+acPhone+'-'+new Date().toISOString().slice(0,10)+'.json';
+        a.click();URL.revokeObjectURL(url);msg('acIO','已导出（明文，请妥善保管）','ok');
+      })})
+      .catch(function(e){msg('acIO',e.message,'err')});
+  };
+  $('acImportBtn').onclick=function(){
+    if(!acPhone){msg('acIO','请先载入账号','warn');return;}
+    if(!acPicked)return;
+    if(!confirm('导入将覆盖/合并账号 '+acPhone+' 的账本数据，确定继续？'))return;
+    var fd=new FormData();fd.append('file',acPicked);
+    fetch('/api/admin/account/import?'+new URLSearchParams({phone:acPhone}).toString(),{method:'POST',headers:{'X-Admin-Token':token()},body:fd})
+      .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.error||'导入失败');return d})})
+      .then(function(d){var n=d.stats||{};msg('acIO','导入完成：活动 '+(n.events||0)+'、礼金 '+(n.gifts||0),'ok');loadAccountEventsForSelect();loadAccountPage('gifts');})
+      .catch(function(e){msg('acIO',e.message,'err')});
+  };
+
+  /* ================= ③ 全站备份与还原 ================= */
   $('exportBtn').onclick=function(){
     var b=this;b.disabled=true;msg('backupMsg','');
     api('/api/admin/export-all','GET',undefined,true)
@@ -246,8 +636,50 @@
   $('importMergeBtn').onclick=function(){doImport(true)};
   $('importCoverBtn').onclick=function(){doImport(false)};
 
-  // 启动：有 token 直接进主界面并验证
-  if(token()){ showMain(); loadUsers(); } else { showLogin(); }
+  /* ================= ④ 全栈操作日志 ================= */
+  var logPage=1,logLimit=50;
+  function loadLogs(page){
+    logPage=page||1;
+    var p=new URLSearchParams({page:String(logPage),limit:String(logLimit)});
+    var a=$('lgActor').value.trim();if(a)p.set('actor',a);
+    var act=$('lgAction').value.trim();if(act)p.set('action',act);
+    api('/api/admin/logs?'+p.toString(),'GET')
+      .then(function(d){
+        var logs=d.logs||[];
+        var rows=logs.map(function(l){
+          return '<tr>'+
+            '<td style="font-family:monospace;font-size:12px">'+fmtDate(l.ts)+'</td>'+
+            '<td>'+esc(l.actor)+'</td>'+
+            '<td><span class="tag">'+esc(l.action)+'</span></td>'+
+            '<td style="font-size:12px">'+esc(l.method)+' <span style="color:var(--sub)">'+esc(l.path)+'</span></td>'+
+            '<td class="num">'+(l.ok?'<span class="tag ok">'+l.status+'</span>':'<span class="tag err">'+l.status+'</span>')+'</td>'+
+            '<td style="font-family:monospace;font-size:12px">'+esc(l.ip)+'</td>'+
+            '<td class="wrap" style="font-size:12px">'+esc(l.detail)+'</td>'+
+            '</tr>';
+        }).join('');
+        $('logRows').innerHTML=rows||'<tr><td colspan="7" style="text-align:center;color:#8a8178">暂无日志</td></tr>';
+        var pages=Math.max(1,Math.ceil((d.total||0)/logLimit));
+        $('logPager').innerHTML=
+          '<button class="btn ghost sm" '+(logPage<=1?'disabled':'')+' onclick="__logPage('+(logPage-1)+')">上一页</button>'+
+          '<span>'+logPage+' / '+pages+' · 共 '+(d.total||0)+' 条</span>'+
+          '<button class="btn ghost sm" '+(logPage>=pages?'disabled':'')+' onclick="__logPage('+(logPage+1)+')">下一页</button>';
+      })
+      .catch(function(e){$('logRows').innerHTML='<tr><td colspan="7" style="text-align:center;color:#c0392b">'+esc(e.message)+'</td></tr>';});
+  }
+  window.__logPage=function(n){loadLogs(Math.max(1,n));};
+  $('lgQueryBtn').onclick=function(){logLimit=Number($('lgLimit').value);loadLogs(1);};
+  $('lgPurgeBtn').onclick=function(){
+    var v=prompt('清理多少天前的日志？（例如 30）','30');
+    if(v===null)return;
+    var days=parseInt(v,10);
+    if(!Number.isFinite(days)||days<1){toast('请输入正整数天数');return;}
+    api('/api/admin/logs/purge','POST',{days:days})
+      .then(function(d){toast('已清理 '+d.purged+' 条旧日志');loadLogs(1);})
+      .catch(function(e){toast(e.message)});
+  };
+
+  /* 启动：有 token 直接进主界面并验证 */
+  if(token()){ showMain(); loadUsers(); loadLogs(1); } else { showLogin(); }
 })();
 </script>
 </body>

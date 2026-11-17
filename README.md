@@ -33,7 +33,7 @@
 - **统计分析**：收支总览、往来联系人、年度报告、CSV 导出。
 - **AI 记账**：配置自己的大模型 API Key，用自然语言批量记一笔（支持浏览器直连兜底应对限流）。
 - **个人中心**：头像菜单里改昵称、改密码、换绑定手机号（账本数据自动迁移）。
-- **管理后台 `/admin`**：管理所有用户（含帮用户重置密码）、全站数据备份还原。
+- **管理后台 `/admin`**：管理所有用户（含帮用户重置密码）、按账号编辑任意用户的数据/配置、单账号独立导入导出、全站备份还原、查看全栈操作日志。
 
 ## 部署前须知
 
@@ -234,7 +234,10 @@ enabled = true
 功能：
 
 - **用户管理**：查看全部注册用户（含活动数/礼金数/接口密钥状态）；新增用户；改昵称；**重置任意用户密码**（用户忘记密码时在这里改）；删除用户及名下全部数据。
+- **账号数据管理（按账号编辑）**：输入某用户手机号即可载入该账号，分页查看（默认 20 条/页）并**增删改其礼金、活动**；编辑其 **AI/小程序配置**（baseUrl、模型、API Key）、**小程序接口密钥**（重新生成/改端口/清空）、**设备绑定**（解除指定设备）。
+- **单账号导入/导出**：对任意单个账号做独立的全栈备份导出与导入（含账本、AI 配置、密钥），不触碰其他账号。
 - **全站备份/还原**：导出全站数据（所有用户 + 账本 + 配置）为明文 JSON；导入时可选「合并」（保留现有数据）或「覆盖还原」（清空后重建）。换实例迁移、灾难恢复都靠它。
+- **全栈操作日志**：系统自动记录**所有用户**的读写增删改查、配置修改、登录注册、备份等动作（操作人、结果码、IP、备注）。后台可按操作人/动作筛选、分页查看，并可一键清理 N 天前的旧日志。
 
 > ⚠️ `ADMIN_KEY` 权限极高（能改所有人密码、删所有数据、导出全站），务必用强随机串，不要用弱口令。
 
@@ -253,6 +256,12 @@ curl -X POST https://你的域名/api/admin/purge-account \
 ```
 
 未设置 `ADMIN_KEY` 时，网页后台和这两个接口都不可用。
+
+### 全栈操作日志
+
+- 记录位置：管理后台 →「全栈操作日志」卡片。数据存于 D1 的 `logs` 表（随首次请求自动建表），写入是 best-effort——日志写失败绝不影响业务主流程。
+- 记录范围：所有 `/api` 请求，含普通用户与管理员。读类记 `read`，写类按动作细分（`register`/`login`/`event.create`/`gift.update`/`ai.config.save`/`apikey.rotate`/`admin.login` 等），并带操作人（`user:手机号` / `dev:设备号` / `admin` / `anonymous`）、HTTP 状态码、结果成败、来源 IP。
+- 维护：`logs` 会随使用增长，后台「清理旧日志」按天批量删除（如清理 30 天前记录）；也可命令行 `DELETE FROM logs WHERE ts < ?`。
 
 ## 日常使用
 
@@ -308,6 +317,18 @@ curl -X POST https://你的域名/api/admin/purge-account \
 | POST | `/api/admin/user/delete` | 删除用户及全部数据 |
 | GET | `/api/admin/export-all` | 全站备份导出 |
 | POST | `/api/admin/import-all` | 全站备份导入（multipart：`file`，可选 `merge=1`） |
+| GET | `/api/admin/account/data?phone=&kind=&page=&size=` | 按账号查看：`kind=gifts/events` 分页列表（默认 20/页），`kind=setting/apikey/device` 配置对象 |
+| POST | `/api/admin/account/event` | 按账号新增/更新活动（`phone`，有 `id` 为改） |
+| POST | `/api/admin/account/event/delete` | 按账号删除活动（级联删礼金，`phone`+`id`） |
+| POST | `/api/admin/account/gift` | 按账号新增/更新礼金（`phone`，有 `id` 为改） |
+| POST | `/api/admin/account/gift/delete` | 按账号删除礼金（`phone`+`id`） |
+| POST | `/api/admin/account/settings` | 按账号改 AI 配置（`baseUrl`/`model`/`apiKey`，Key 留空保留原值） |
+| POST | `/api/admin/account/apikey` | 按账号管理密钥：`action=rotate/port/clear`，默认查看 |
+| POST | `/api/admin/account/device` | 按账号解除设备绑定（`phone`+`deviceId`） |
+| GET | `/api/admin/account/export?phone=` | 单账号全栈备份导出 |
+| POST | `/api/admin/account/import?phone=` | 单账号全栈备份导入（multipart：`file`） |
+| GET | `/api/admin/logs?limit=&page=&actor=&action=` | 全栈操作日志（分页 + 按操作人/动作过滤） |
+| POST | `/api/admin/logs/purge` | 清理 N 天前日志（`{days}`） |
 | POST | `/api/admin/reset-password`、`/api/admin/purge-account` | 命令行管理（需 `X-Admin-Key`） |
 
 **用户认证头**（按优先级）：`X-Api-Key`/`X-Token`/`Authorization: Bearer`（JWT 或小程序密钥）→ `X-Ledger-Token`（设备/游客）。不同账号数据相互隔离。

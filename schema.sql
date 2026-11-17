@@ -110,3 +110,20 @@ CREATE TABLE IF NOT EXISTS register_log (
   device_id TEXT PRIMARY KEY,
   created_at TEXT NOT NULL
 );
+
+-- 全栈操作审计日志（Worker 在请求边界自动写入，记录所有用户/管理员的读写增删改查、配置、登录注册等）
+CREATE TABLE IF NOT EXISTS logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  actor TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL DEFAULT '',
+  target TEXT NOT NULL DEFAULT '',
+  method TEXT NOT NULL DEFAULT '',
+  path TEXT NOT NULL DEFAULT '',
+  status INTEGER NOT NULL DEFAULT 0,
+  ok INTEGER NOT NULL DEFAULT 1,
+  ip TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts);
+CREATE INDEX IF NOT EXISTS idx_logs_actor ON logs(actor);
