@@ -356,3 +356,38 @@
 - 跨账号导入：账号 A 导出 → 全新账号 C 一次导入成功（importedEvents:1, importedGifts:1, restored:1），数据与接口密钥完整迁移；同名接口密钥从 A 转让给 C（A 变 configured:false）；
 - 旧加密格式导入明确报"无法识别的备份文件格式"；
 - 无任何加密代码残留（grep 确认，仅剩 HMAC 用于密码哈希/JWT）。
+
+---
+
+## 十一、管理后台（2026-11-17 15:30）
+
+### 需求与方案调整
+
+用户要求网页管理后台，用于：忘记密码时改用户密码、用户增删改查、全站数据备份还原。初版用 ADMIN_USER/ADMIN_PASSWD 两套凭证，后按用户要求简化为**单 ADMIN_KEY**（与命令行接口共用一把，线上已有该 Secret，无需新增变量）。
+
+### 后端（src/index.js）
+
+- `POST /api/admin/login`：校验 `ADMIN_KEY`（body.adminKey 或 X-Admin-Key 头），签发 role:'admin' 的 12 小时 JWT；后续管理接口用 `X-Admin-Token` 携带；
+- `GET /api/admin/users`：全部用户 + 每账号活动/礼金数 + 接口密钥状态；
+- `POST /api/admin/user/create|update|delete`：新增/改昵称密码/删用户及名下全部数据；
+- `GET /api/admin/export-all`：全部 11 张表明文 JSON 导出；
+- `POST /api/admin/import-all`：按表清空重建（覆盖）或 INSERT OR REPLACE（合并）导入；列名白名单 `/^[A-Za-z_][A-Za-z0-9_]*$/` 防注入；每批 40 条控制语句数。
+
+### 前端（www/admin.html，访问路径 /admin）
+
+独立页面：ADMIN_KEY 登录框、用户表格（编辑/删除）、新增用户弹窗、全站导出/合并导入/覆盖还原、管理员令牌本地存储与 401 自动失效处理。
+
+### 验证（A1–A13 + K1–K8，全通过）
+
+- 登录：错误 key 403、正确 key 签发 token、X-Admin-Key 头兼容、无 token 401；
+- 用户 CRUD：新增→登录成功→改密码→旧密码失败新密码成功→删除→账号不存在；
+- 全站备份：导出 50+ 行（9 用户+账本+配置），删用户后覆盖导入完整恢复，登录+账本数据正确；
+- 线上验证：/admin 200、页面含 ADMIN_KEY 登录、登录接口错误 key 403、健康 ok。
+
+### 文档
+
+README 重写管理后台章节（单 ADMIN_KEY 方案）与五步部署变量表（ADMIN_KEY 必设、JWT_SECRET 建议、BACKUP_SECRET 已移除）。
+
+### 提交
+
+`495816e` 已推送 GitHub main。测试产生的备份文件已删除，工作区干净。
