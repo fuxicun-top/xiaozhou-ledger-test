@@ -332,3 +332,27 @@
 提交 `06288e8` 已推送 GitHub main，Pages 自动部署。线上备份导出需按第九节 `BACKUP_SECRET` 指引在 Cloudflare Dashboard 配置后恢复。
 
 > ⚠️ `BACKUP_SECRET` 必须在 Cloudflare 控制台为 Worker/Pages 项目添加 Secret（Dashboard → Workers & Pages → 项目 → Settings → Variables and Secrets → Add Secret，名称 `BACKUP_SECRET`，值为任意长随机串），本地没有凭证无法代配。配置后「导出/导入全栈备份」即恢复正常。
+
+---
+
+## 十、备份改为明文（2026-11-17 14:10）
+
+### 决策背景
+
+用户提出：站点给多人使用后，用户换账号/换实例导入备份不应要求公开站点级密钥。经确认选择：**备份改为明文，且保留全部凭证（AI Key、接口密钥）**。核心澄清：`BACKUP_SECRET` 一直是服务端密钥，用户导出/导入全程不接触，无需向使用者公开；但明文方案确实消除了密钥轮换导致历史备份失效、跨实例需同密钥的问题。
+
+### 代码改动（src/index.js）
+
+- 删除 `b64encode/b64decode/importBackupKey/sealPayload` 全部加密代码；
+- 新增 `buildPayload()`：明文 JSON，`alg:'plain'`、`version:2`，含 events/gifts/ai/apiKey/account；
+- `openPayload(doc)` 改为纯明文读取，不再接收 env、不做任何解密；旧加密格式返回"无法识别"；
+- `handleExportBackup` 去掉 `BACKUP_SECRET` 前置检查；文件名 `.enc.json` → `.json`；
+- **修复跨账号导入主键冲突**：`account_keys.key` 是全局主键，备份里的 key 仍属导出方，导入方 INSERT 撞主键导致 500。导入前先 `DELETE FROM account_keys WHERE key = ?` 清除同名记录，再插入（同一密钥只归属一个账号）。
+- README 同步：移除 BACKUP_SECRET 必设项，备份章节改明文说明，加明文凭证保管警告。
+
+### 验证（P1–P17，全通过）
+
+- **无 BACKUP_SECRET 的实例**导出成功；备份文件明文可读，`alg:plain`，events/gifts 完整，AI Key/接口密钥原样保留；
+- 跨账号导入：账号 A 导出 → 全新账号 C 一次导入成功（importedEvents:1, importedGifts:1, restored:1），数据与接口密钥完整迁移；同名接口密钥从 A 转让给 C（A 变 configured:false）；
+- 旧加密格式导入明确报"无法识别的备份文件格式"；
+- 无任何加密代码残留（grep 确认，仅剩 HMAC 用于密码哈希/JWT）。

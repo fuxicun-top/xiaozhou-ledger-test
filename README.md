@@ -91,7 +91,6 @@ Cloudflare D1（你自己的数据库实例，数据完全隔离）
    | 类型 | 名称 | 值 | 是否必填 |
    | --- | --- | --- | --- |
    | Encrypted Secret | `ADMIN_KEY` | 任意长随机串（自己生成并记好，界面有"随机生成"按钮） | **必设**（忘记账号密码的后台重置靠它） |
-   | Encrypted Secret | `BACKUP_SECRET` | 任意长随机串 | **必设**（「导出/导入全栈备份」的加解密靠它，不设则备份功能不可用） |
    | Encrypted Secret | `JWT_SECRET` | 任意长随机串 | 建议设（不设用内置默认值，公网部署建议替换） |
    | Variable | `MAX_ACCOUNTS` | 数字，如 `100` | 可选。本实例可注册账号总数上限，防刷满免费配额；**不设 = 不限制** |
    | Variable | `REGISTER_COOLDOWN_MINUTES` | 数字，如 `60` | 可选。同一设备两次注册的最小间隔分钟数；**不设 = 不限制** |
@@ -143,15 +142,15 @@ curl https://你的Worker地址/api/health
 
 ## 全栈备份（换实例迁移用）
 
-「导出全栈备份」（`/api/export/backup`）导出一个 **AES-256-GCM 加密**的 JSON 文件，包含该账号的**全部内容**：
+「导出全栈备份」（`/api/export/backup`）导出一个**明文 JSON 文件**，包含该账号的**全部内容**：
 
 - 活动（events）+ 礼金（gifts）；
 - AI 配置（接口地址 / 模型 / API Key）；
 - 小程序接口密钥（明文密钥 + 端口）。
 
-到**新实例**登录后「导入全栈备份」（`/api/import/backup`，需新实例也设置 `BACKUP_SECRET` 同值——建议两个实例用同一个）即可一键恢复，账本和配置都不用重新填。导入按「账号 + 类型 + 日期」去重，已有数据不重复写入，可放心对已有账号执行。
+**不需要任何密钥**：导出/导入都不依赖服务端 Secret。用户 A 导出文件后，换成账号 B 登录后导入，数据自动归属账号 B（按「账号 + 类型 + 日期」去重，已有数据不重复写入）。换实例部署同样直接导入即可，两个实例无需配置相同密钥。
 
-> 备份文件是密文，但解密密钥（`BACKUP_SECRET`）由你保管；请勿把备份文件与密钥发给他人（接口密钥在文件内是明文，同属你的账号凭证）。
+> ⚠️ **备份文件是明文，内含 AI API Key 与小程序接口密钥**——等同于你的账号凭证。请像保管密码一样保管备份文件，不要发到微信群、网盘公开区等地方。任何人拿到备份文件，都能导入并拿到里面的账本和密钥。
 
 ## 数据库说明（一般不用管）
 
@@ -179,7 +178,6 @@ npx wrangler d1 execute xiaozhou-ledger-web --remote --file=schema.sql
 
 # 设置密钥
 npx wrangler secret put ADMIN_KEY
-npx wrangler secret put BACKUP_SECRET
 npx wrangler secret put JWT_SECRET
 
 # 可选变量（不设=不限制）
@@ -229,7 +227,7 @@ npx wrangler d1 execute xiaozhou-ledger-web --remote --file=fix-account-keys.sql
 | GET | `/api/report/yearly?year=` | 年度报告 |
 | GET | `/api/export/csv?type=` | CSV 导出 |
 | GET/POST | `/api/ai/config`、`POST /api/ai/parse` | AI 模型配置 / 解析（需自带模型 API Key） |
-| GET/POST | `/api/export/backup`、`/api/import/backup` | 全栈备份导出 / 导入（账本 + AI 配置 + 接口密钥；需 `BACKUP_SECRET`） |
+| GET/POST | `/api/export/backup`、`/api/import/backup` | 全栈备份导出 / 导入（明文 JSON，账本 + AI 配置 + 接口密钥；无需密钥） |
 | POST | `/api/feedback` | 意见反馈 |
 | GET/POST | `/api/apikey`、`/api/apikey/rotate`、`/api/apikey/port` | 接口密钥状态 / 生成 / 端口 |
 | GET | `/api/membership` | 会员信息（Web 部署视为永久版） |

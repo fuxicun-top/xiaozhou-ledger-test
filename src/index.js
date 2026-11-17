@@ -1757,97 +1757,43 @@ async function handleMembership(origin) {
 
 /* ------------------------------------------------------------------ */
 /* 备份导出 / 导入                                                     */
+/*                                                                    */
+/* 备份为明文 JSON：导出/导入都不依赖任何服务端密钥，用户换账号、换实例    */
+/* 都能直接导入。注意备份文件内含 AI API Key 与小程序接口密钥（完整还原    */
+/* 所需），请像保管密码一样保管备份文件，不要发到公开渠道。               */
 /* ------------------------------------------------------------------ */
 
-function b64encode(bytes) {
-  let binary = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
-
-function b64decode(text) {
-  const binary = atob(text);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
-async function importBackupKey(env) {
-  const secret = env.BACKUP_SECRET;
-  if (!secret) throw new Error('服务端未配置备份密钥 BACKUP_SECRET');
-  const digest = await crypto.subtle.digest(
-    'SHA-256',
-    new TextEncoder().encode(`xiaozhou-ledger-backup-v1:${secret}`)
-  );
-  return crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt', 'decrypt']);
-}
-
-async function sealPayload(env, account, events, gifts, ai, apiKey) {
-  const key = await importBackupKey(env);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    key,
-    new TextEncoder().encode(
-      JSON.stringify({
-        version: 1,
-        exportedAt: nowIso(),
-        events,
-        gifts,
-        // 全栈备份附加项（v1 兼容：旧备份没有这两个字段，导入端按 undefined 处理）
-        ai: ai
-          ? {
-              baseUrl: ai.ai_base_url || '',
-              apiKey: ai.ai_api_key || '',
-              model: ai.ai_model || '',
-            }
-          : undefined,
-        apiKey,
-      })
-    )
-  );
+/** 组装明文备份文档（无加密、无密钥依赖）。 */
+function buildPayload(account, events, gifts, ai, apiKey) {
   return {
     app: 'gift-ledger',
     kind: 'full',
-    alg: 'AES-256-GCM',
-    version: 1,
-    nonce: b64encode(iv),
-    data: b64encode(new Uint8Array(ciphertext)),
+    alg: 'plain',
+    version: 2,
     exportedAt: nowIso(),
     account,
+    events,
+    gifts,
+    // 全栈备份附加项：AI 模型配置与接口密钥（旧备份无这两个字段时按 undefined 处理）
+    ai: ai
+      ? {
+          baseUrl: ai.ai_base_url || '',
+          apiKey: ai.ai_api_key || '',
+          model: ai.ai_model || '',
+        }
+      : undefined,
+    apiKey,
   };
 }
 
-async function openPayload(env, doc) {
-  if (doc && doc.app === 'gift-ledger' && doc.alg === 'AES-256-GCM' && typeof doc.data === 'string') {
-    const key = await importBackupKey(env);
-    try {
-      const plain = await crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv: b64decode(doc.nonce || '') },
-        key,
-        b64decode(doc.data)
-      );
-      return JSON.parse(new TextDecoder().decode(plain));
-    } catch {
-      throw new Error('备份文件解密失败：不是本服务导出的备份');
-    }
-  }
-  if (doc && (Array.isArray(doc.events) || Array.isArray(doc.gifts))) return doc;
+/** 读取明文备份文档。备份全程无加密、无密钥依赖。 */
+function openPayload(doc) {
+  if (!doc || typeof doc !== 'object') throw new Error('无法识别的备份文件格式');
+  if (Array.isArray(doc.events) || Array.isArray(doc.gifts)) return doc;
   throw new Error('无法识别的备份文件格式');
 }
 
 async function handleExportBackup(env, account, origin) {
-  // 未配置备份密钥时给出明确提示（此前会抛错被兜底成笼统 500）
-  if (!env.BACKUP_SECRET) {
-    return fail(
-      '服务端未配置备份密钥 BACKUP_SECRET，导出功能不可用；部署者请先执行 wrangler secret put BACKUP_SECRET',
-      400,
-      origin
-    );
-  }
   const { events, gifts } = await loadAccountData(env, account);
 
   // 全栈备份：连同该账号的 AI 配置与（明文）接口密钥一起导出，
@@ -1880,12 +1826,12 @@ async function handleExportBackup(env, account, origin) {
     if (s && s.api_key) apiKey = { key: s.api_key, apiPort: s.api_port || 0, createdAt: s.api_key_created_at || '' };
   }
 
-  const sealed = await sealPayload(env, account, events, gifts, ai, apiKey);
-  return new Response(JSON.stringify(sealed), {
+  const payload = buildPayload(account, events, gifts, ai, apiKey);
+  return new Response(JSON.stringify(payload, null, 2), {
     status: 200,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
-      'Content-Disposition': `attachment; filename="gift-ledger-backup-${todayStr()}.enc.json"`,
+      'Content-Disposition': `attachment; filename="gift-ledger-backup-${todayStr()}.json"`,
       'Cache-Control': 'no-store',
       ...corsHeaders(origin),
     },
@@ -1911,7 +1857,7 @@ async function handleImportBackup(request, env, account, origin) {
 
   let payload;
   try {
-    payload = await openPayload(env, doc);
+    payload = openPayload(doc);
   } catch (e) {
     return fail(e && e.message ? e.message : '备份文件无法解析', 400, origin);
   }
@@ -2046,6 +1992,9 @@ async function handleImportBackup(request, env, account, origin) {
     const ak = payload.apiKey;
     const port = Number(ak.apiPort) || 0;
     if (isPhoneAccount) {
+      // key 是全局主键：备份里的密钥可能仍属于导出方账号，先清掉其它账号的同名记录，
+      // 否则跨账号导入会撞主键（UNIQUE constraint failed: account_keys.key）。
+      await env.DB.prepare('DELETE FROM account_keys WHERE key = ?').bind(ak.key).run();
       await env.DB.prepare('DELETE FROM account_keys WHERE phone = ?')
         .bind(accountPhone(account))
         .run();
