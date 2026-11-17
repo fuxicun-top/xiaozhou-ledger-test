@@ -1,3 +1,5 @@
+import { ensureSchema, isDbReady, isNoSchemaError } from './db/schema.js';
+
 /**
  * 人情录 Web 版后端 —— Cloudflare Worker + D1
  *
@@ -434,6 +436,37 @@ async function handleAccountRegister(request, env, identity, origin) {
   if (!validPhone(phone)) return fail('请输入正确的手机号', 400, origin);
   if (!validPassword(password)) return fail('密码需为 8-32 位', 400, origin);
 
+  // 部署者限制（Cloudflare 控制台 Variables 配置，未设置 = 不限制）：
+  //  - MAX_ACCOUNTS：本实例可注册账号总数上限，保护免费配额不被刷满；
+  //  - REGISTER_COOLDOWN_MINUTES：同一设备两次注册的最小间隔（分钟）。
+  const cooldownMin = Number.parseInt(asString(env.REGISTER_COOLDOWN_MINUTES, 10), 10);
+  if (Number.isFinite(cooldownMin) && cooldownMin > 0 && identity.deviceId) {
+    let last = null;
+    try {
+      last = await env.DB.prepare('SELECT created_at FROM register_log WHERE device_id = ?')
+        .bind(identity.deviceId)
+        .first();
+    } catch {
+      last = null; // register_log 表未建（极旧库）时跳过冷却检查，自愈会补建
+    }
+    if (last && last.created_at) {
+      const elapsedMin = (Date.now() - Date.parse(last.created_at)) / 60000;
+      const remainMin = Math.ceil(cooldownMin - elapsedMin);
+      if (remainMin > 0) {
+        return fail(`本设备注册过于频繁，请 ${remainMin} 分钟后再试`, 429, origin);
+      }
+    }
+  }
+
+  const maxAccounts = Number.parseInt(asString(env.MAX_ACCOUNTS, 10), 10);
+  if (Number.isFinite(maxAccounts) && maxAccounts > 0) {
+    const countRow = await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first();
+    const used = (countRow && Number(countRow.n)) || 0;
+    if (used >= maxAccounts) {
+      return fail(`本实例注册名额已满（${used}/${maxAccounts}），请联系管理员或部署自己的实例`, 403, origin);
+    }
+  }
+
   const userAccount = `user:${phone}`;
   const exists = await env.DB.prepare('SELECT 1 AS x FROM users WHERE phone = ?')
     .bind(phone)
@@ -448,6 +481,19 @@ async function handleAccountRegister(request, env, identity, origin) {
   await env.DB.prepare('INSERT OR IGNORE INTO account_settings (account) VALUES (?)')
     .bind(userAccount)
     .run();
+  // 记录本次注册（供 REGISTER_COOLDOWN_MINUTES 冷却判断；表缺失/失败不影响注册主流程）
+  if (identity.deviceId) {
+    try {
+      await env.DB.prepare(
+        `INSERT INTO register_log (device_id, created_at) VALUES (?, ?)
+         ON CONFLICT(device_id) DO UPDATE SET created_at = excluded.created_at`
+      )
+        .bind(identity.deviceId, nowIso())
+        .run();
+    } catch {
+      /* register_log 表未建（极旧库）时忽略，运行期自愈会补建 */
+    }
+  }
 
   // 首次注册：把 ① 本浏览器游客数据 ② 旧 PIN 账号（accounts 表）数据 并入新账号
   let importedEvents = 0;
@@ -1579,13 +1625,29 @@ async function importBackupKey(env) {
   return crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
 
-async function sealPayload(env, account, events, gifts) {
+async function sealPayload(env, account, events, gifts, ai, apiKey) {
   const key = await importBackupKey(env);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
     key,
-    new TextEncoder().encode(JSON.stringify({ version: 1, exportedAt: nowIso(), events, gifts }))
+    new TextEncoder().encode(
+      JSON.stringify({
+        version: 1,
+        exportedAt: nowIso(),
+        events,
+        gifts,
+        // 全栈备份附加项（v1 兼容：旧备份没有这两个字段，导入端按 undefined 处理）
+        ai: ai
+          ? {
+              baseUrl: ai.ai_base_url || '',
+              apiKey: ai.ai_api_key || '',
+              model: ai.ai_model || '',
+            }
+          : undefined,
+        apiKey,
+      })
+    )
   );
   return {
     app: 'gift-ledger',
@@ -1619,7 +1681,38 @@ async function openPayload(env, doc) {
 
 async function handleExportBackup(env, account, origin) {
   const { events, gifts } = await loadAccountData(env, account);
-  const sealed = await sealPayload(env, account, events, gifts);
+
+  // 全栈备份：连同该账号的 AI 配置与（明文）接口密钥一起导出，
+  // 换实例部署后可一键恢复（AI 模型服务/小程序绑定），不必重新配置。
+  let ai = null;
+  let apiKey = null;
+  if (account.startsWith('user:') || account.startsWith('phone:')) {
+    const aiRow = await env.DB.prepare(
+      'SELECT ai_base_url, ai_api_key, ai_model FROM account_settings WHERE account = ?'
+    )
+      .bind(account)
+      .first();
+    // 仅当确有配置时才写入备份（注册时生成的全空默认行不备份）
+    if (aiRow && (aiRow.ai_base_url || aiRow.ai_api_key || aiRow.ai_model)) ai = aiRow;
+    const keyRow = await env.DB.prepare(
+      'SELECT key, port, created_at FROM account_keys WHERE phone = ? ORDER BY created_at DESC LIMIT 1'
+    )
+      .bind(accountPhone(account))
+      .first();
+    if (keyRow) apiKey = { key: keyRow.key, apiPort: keyRow.port, createdAt: keyRow.created_at };
+  } else {
+    const deviceId = accountDevice(account);
+    const s = await env.DB.prepare(
+      'SELECT ai_base_url, ai_api_key, ai_model, api_key, api_port, api_key_created_at FROM device_settings WHERE device_id = ?'
+    )
+      .bind(deviceId)
+      .first();
+    // 仅当确有配置时才写入备份（全空行不备份）
+    ai = s && (s.ai_base_url || s.ai_api_key || s.ai_model) ? s : null;
+    if (s && s.api_key) apiKey = { key: s.api_key, apiPort: s.api_port || 0, createdAt: s.api_key_created_at || '' };
+  }
+
+  const sealed = await sealPayload(env, account, events, gifts, ai, apiKey);
   return new Response(JSON.stringify(sealed), {
     status: 200,
     headers: {
@@ -1654,9 +1747,7 @@ async function handleImportBackup(request, env, account, origin) {
   } catch (e) {
     return fail(e && e.message ? e.message : '备份文件无法解析', 400, origin);
   }
-  if (!payload || (!Array.isArray(payload.events) && !Array.isArray(payload.gifts))) {
-    return fail('备份文件内容不完整', 400, origin);
-  }
+  if (!payload) return fail('备份文件内容不完整', 400, origin);
 
   const now = nowIso();
   const incomingEvents = Array.isArray(payload.events) ? payload.events : [];
@@ -1751,7 +1842,64 @@ async function handleImportBackup(request, env, account, origin) {
     await env.DB.batch(statements.slice(i, i + 50));
   }
 
-  return jsonRes({ importedEvents, importedGifts, skippedEvents, skippedGifts }, 200, origin);
+  // 全栈备份恢复：AI 配置与接口密钥（仅当备份内含对应字段；旧备份无则跳过）
+  let restored = 0;
+  const isPhoneAccount = account.startsWith('user:') || account.startsWith('phone:');
+  if (payload.ai && (payload.ai.baseUrl || payload.ai.model || payload.ai.apiKey)) {
+    const ai = payload.ai;
+    const base = asString(ai.baseUrl, 300).trim();
+    const model = asString(ai.model, 120).trim();
+    const aiKey = asString(ai.apiKey, 500).trim();
+    if (isPhoneAccount) {
+      await env.DB.prepare(
+        `INSERT INTO account_settings (account, ai_base_url, ai_api_key, ai_model) VALUES (?, ?, ?, ?)
+         ON CONFLICT(account) DO UPDATE SET
+           ai_base_url = excluded.ai_base_url,
+           ai_api_key = excluded.ai_api_key,
+           ai_model = excluded.ai_model`
+      )
+        .bind(account, base, aiKey, model)
+        .run();
+    } else {
+      const deviceId = accountDevice(account);
+      await env.DB.prepare(
+        `INSERT INTO device_settings (device_id, ai_base_url, ai_api_key, ai_model) VALUES (?, ?, ?, ?)
+         ON CONFLICT(device_id) DO UPDATE SET
+           ai_base_url = excluded.ai_base_url,
+           ai_api_key = excluded.ai_api_key,
+           ai_model = excluded.ai_model`
+      )
+        .bind(deviceId, base, aiKey, model)
+        .run();
+    }
+    restored++;
+  }
+  if (payload.apiKey && payload.apiKey.key) {
+    const ak = payload.apiKey;
+    const port = Number(ak.apiPort) || 0;
+    if (isPhoneAccount) {
+      await env.DB.prepare('DELETE FROM account_keys WHERE phone = ?')
+        .bind(accountPhone(account))
+        .run();
+      await env.DB.prepare('INSERT INTO account_keys (key, phone, port, created_at) VALUES (?, ?, ?, ?)')
+        .bind(ak.key, accountPhone(account), port, nowIso())
+        .run();
+    } else {
+      const deviceId = accountDevice(account);
+      await env.DB.prepare(
+        `INSERT INTO device_settings (device_id, api_key, api_port, api_key_created_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(device_id) DO UPDATE SET
+           api_key = excluded.api_key,
+           api_port = excluded.api_port,
+           api_key_created_at = excluded.api_key_created_at`
+      )
+        .bind(deviceId, ak.key, port, nowIso())
+        .run();
+    }
+    restored++;
+  }
+
+  return jsonRes({ importedEvents, importedGifts, skippedEvents, skippedGifts, restored }, 200, origin);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1760,6 +1908,28 @@ async function handleImportBackup(request, env, account, origin) {
 
 export default {
   async fetch(request, env) {
+    try {
+      return await apiRequest(request, env);
+    } catch (e) {
+      // 兜底自愈：请求触发"数据库缺表/缺结构"（D1 error code 1101，常见于
+      // 全新部署尚未建表、或旧库升级）时，自动执行 ensureSchema 并重试一次。
+      // 这样即使部署钩子不可用/未触发，站点也能自动把表建好，无需进控制台。
+      if (isNoSchemaError(e) && env.DB) {
+        try {
+          await ensureSchema(env.DB);
+          return await apiRequest(request, env);
+        } catch (e2) {
+          console.error('auto-ensureSchema retry failed', e2 && e2.stack ? e2.stack : e2);
+        }
+      }
+      console.error('unhandled error', e && e.stack ? e.stack : e);
+      const origin = request.headers.get('Origin');
+      return fail('服务暂时不可用，请稍后再试', 500, origin);
+    }
+  },
+};
+
+async function apiRequest(request, env) {
     const url = new URL(request.url);
     const origin = request.headers.get('Origin');
 
@@ -1777,11 +1947,22 @@ export default {
 
     try {
       if (path === '/api/health' && request.method === 'GET') {
+        // 数据库体检：dbReady=false 表示核心表尚未建好（全新部署且自愈未跑过）。
+        // 任意 /api 请求遇到缺表会自动 ensureSchema 补建，这里仅用于部署后快速确认。
+        let dbReady = true;
+        if (env.DB) {
+          try {
+            dbReady = await isDbReady(env.DB);
+          } catch {
+            dbReady = false;
+          }
+        }
         return jsonRes(
           {
             ok: true,
             service: 'xiaozhou-ledger-web',
             time: nowIso(),
+            dbReady,
           },
           200,
           origin
@@ -1909,8 +2090,7 @@ export default {
 
       return fail('接口不存在', 404, origin);
     } catch (e) {
-      console.error('unhandled error', e && e.stack ? e.stack : e);
-      return fail('服务暂时不可用，请稍后再试', 500, origin);
+      // 让错误冒到外层 fetch：缺表(1101)时由外层自动 ensureSchema 并重试一次
+      throw e;
     }
-  },
-};
+  }

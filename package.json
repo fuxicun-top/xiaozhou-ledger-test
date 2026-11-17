@@ -6,8 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:init": "wrangler d1 execute xiaozhou-ledger-web --remote --file=schema.sql",
-    "db:migrate": "wrangler d1 execute xiaozhou-ledger-web --remote --file=migrate-account.sql"
+    "db:init": "wrangler d1 execute xiaozhou-ledger-web --remote --file=schema.sql"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
