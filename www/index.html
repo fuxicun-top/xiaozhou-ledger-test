@@ -58,6 +58,8 @@
           s.setItem("ledger_phone", phone);
           s.setItem("ledger_name", name || "");
           s.setItem("ledger_jwt", jwt || "");
+          // 重新登录成功，清除失效自愈标记（下次 token 失效仍可自动处理）
+          try { sessionStorage.removeItem("__ledger_reauthed"); } catch (e) {}
         }
         function clearLogin() {
           var s = ls();
@@ -171,6 +173,23 @@
             nextInit.headers = headers;
           } catch (e) {}
           var p = originalFetch(nextInput, nextInit);
+          // 登录态自愈：服务端换了 JWT_SECRET 或 token 过期/失效时，会话接口返回 401。
+          // 旧 token 存在但无效会让界面误判"已登录"而卡死，这里自动清掉失效登录态并重载，
+          // 用户即回到游客态可正常登录。用 sessionStorage 标记防重复刷新。
+          if (String(nextInput).indexOf("/api/session") !== -1 && getAuthJwt()) {
+            p = p.then(function (r) {
+              if (r.status === 401) {
+                try {
+                  if (!sessionStorage.getItem("__ledger_reauthed")) {
+                    sessionStorage.setItem("__ledger_reauthed", "1");
+                    clearLogin();
+                    location.reload();
+                  }
+                } catch (e) {}
+              }
+              return r;
+            });
+          }
           // 仅对 AI 解析请求做 429 → 浏览器直连兜底
           if (String(nextInput).indexOf("/api/ai/parse") !== -1) {
             return p.then(function (r) {
@@ -478,7 +497,7 @@
             pfOverlay.style.display = "flex";
           }
 
-          $("#pf-close").onclick = function () { pfOverlay.style.display = "none"; };
+          $$("#pf-close").onclick = function () { pfOverlay.style.display = "none"; };
           pfOverlay.addEventListener("click", function (ev) {
             if (ev.target === pfOverlay) pfOverlay.style.display = "none";
           });
