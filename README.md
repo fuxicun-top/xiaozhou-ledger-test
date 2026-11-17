@@ -67,6 +67,8 @@
    database_id = "<你的 UUID>"       # ← 换成第 1 步复制的 Database ID
    ```
 
+   > 可选参数（`MAX_ACCOUNTS`、`REGISTER_COOLDOWN_MINUTES` 等不敏感的）可在这个文件里加 `[vars]` 段，写法见下方[「wrangler.toml 配置说明」](#wranglertoml-配置说明)。敏感密钥（`ADMIN_KEY`、`JWT_SECRET`）不要写进本文件，见第 4 步。
+
 3. 点 **Commit changes** 提交。**必须先提交，再做第 4 步的接 Git 自动部署。**
 
 ### 第 3 步：创建 Worker
@@ -74,7 +76,7 @@
 控制台 → **Workers & Pages → Create → Worker**：
 
 - 名称填 `xiaozhou-ledger-web`（与 `wrangler.toml` 里的 `name` 一致；改了别的名字就要同步改 `wrangler.toml`）。
-- 如果让你选模板，随便选一个即可，内容会在第 4 步被仓库代码覆盖。
+- 创建时若让你选模板或写初始代码，**留空/随便填即可**——第 5 步接 Git 后，仓库里的代码会被部署上去覆盖掉，初始模板不影响最终结果。
 
 创建后先不部署，下一步设置环境变量。
 
