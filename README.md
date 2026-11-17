@@ -14,6 +14,7 @@
 - [部署前须知](#部署前须知)
 - [控制台部署（推荐，全程网页操作）](#控制台部署推荐全程网页操作)
 - [命令行部署（进阶）](#命令行部署进阶)
+- [wrangler.toml 配置说明](#wranglertoml-配置说明)
 - [管理后台](#管理后台)
 - [日常使用](#日常使用)
 - [备份与迁移](#备份与迁移)
@@ -41,6 +42,7 @@
 - 费用：免费额度足够个人/家庭自用（Workers + D1 都有免费层）。
 - 本项目**无需本地构建前端**：`www/` 里是编译好的静态文件，已随仓库提交。
 - 上游原项目不公开前端源码，本项目用的是其编译产物并做了云端适配；如需重建前端，保持 `/api/*` 契约与 `www/index.html` 中的 `fetch` 注入逻辑即可。
+- **密钥不入仓库**：本仓库为**公开仓库**，`ADMIN_KEY`、`JWT_SECRET` 等敏感值**不写在任何代码/配置/文档里**，一律在 Cloudflare 后台以「加密 Secret」设置与保管（见第 4 步）。仓库里只有"怎么设"的说明，没有值本身。
 
 ## 控制台部署（推荐，全程网页操作）
 
@@ -79,27 +81,28 @@
 
 ### 第 4 步：配置环境变量与密钥
 
-进入刚创建的 Worker → **Settings → Variables and Secrets**。这里有两种存法，按需选：
+进入刚创建的 Worker → **Settings → Variables and Secrets**。本仓库是**公开仓库**，`ADMIN_KEY`、`JWT_SECRET` 等密钥**一律用「加密 Secret」（`Encrypted Secrets` 标签）**，不要写进代码/配置/文档：
 
-- **明文 Variable（`Variables` 标签）**：值直接可见、可随时修改，控制台随时回看。适合自用、想随时确认/改值。
-- **加密 Secret（`Encrypted Secrets` 标签）**：更安全，值只在**添加那一刻**显示一次，之后显示为「已加密」无法回看，只能整值覆盖。
+- **加密 Secret（公开仓库默认且推荐）**：不进 git、`wrangler deploy` 不会清掉，公开仓库下最安全。代价是值只在**添加那一刻**显示一次，之后显示「已加密」无法回看，只能整值覆盖——所以**自己留一份私人备忘**（忘了就重设一个新值，不用找回旧值）。
+- 代码里读的都是 `env.XXX`，加密 Secret 直接注入到 `env`，**无需改任何代码**。
 
-> 代码里读的都是 `env.XXX`，Variable 与 Secret 都注入到同一个 `env`，**两种写法功能等价**，选哪种都不影响代码。
-> ⚠️ 改完任何变量/密钥后，**必须触发一次部署**才会应用到正在运行的 Worker：往 GitHub push 一次自动部署，或本地 `npx wrangler deploy`。单纯改后台不部署，运行中仍是旧值。
+> ⚠️ 改完密钥后**必须触发一次部署**才生效：往 GitHub push 任意改动（CI 自动 `wrangler deploy`）或本地 `npx wrangler deploy`。单纯在后台改值不部署，运行中仍是旧值。
+>
+> （对比）只有当**仓库是私有的、且你希望控制台随时看到/改值**时，才考虑「明文 Variable」（`Variables` 标签）。注意 CI 的 `wrangler deploy` 会清掉未写进 `[vars]` 的明文 Variable，需重新设置——所以公开仓库别用明文。
 
-**要配置的项目：**
+**要配置的项目（公开仓库 + CI 自动部署场景）：**
 
-| 名称 | 值 | 必填 | 建议存法 |
+| 名称 | 值 | 必填 | 存法 |
 | --- | --- | --- | --- |
-| `ADMIN_KEY` | 管理口令。网页管理后台 `/admin` 与命令行管理接口共用这一把 | **必设** | 明文（自用方便回看）或加密（更安全） |
-| `JWT_SECRET` | 登录令牌签名密钥。不设则回退到内置默认值，公网有登录令牌被伪造的风险 | 强烈建议设 | 明文（可回看）或加密（更安全） |
-| `MAX_ACCOUNTS` | 数字，如 `100`。限制可注册账号总数；不设 = 不限 | 可选 | 明文 |
-| `REGISTER_COOLDOWN_MINUTES` | 数字，如 `60`。同一设备两次注册的最小间隔分钟；不设 = 不限 | 可选 | 明文 |
+| `ADMIN_KEY` | 管理口令。网页管理后台 `/admin` 与命令行管理接口共用这一把 | **必设** | **加密 Secret** |
+| `JWT_SECRET` | 登录令牌签名密钥。不设则回退到内置默认值，公网有登录令牌被伪造的风险 | 强烈建议设 | **加密 Secret** |
+| `MAX_ACCOUNTS` | 数字，如 `100`。限制可注册账号总数；不设 = 不限 | 可选 | 写进 `wrangler.toml [vars]`（不敏感，可入库） |
+| `REGISTER_COOLDOWN_MINUTES` | 数字，如 `60`。同一设备两次注册的最小间隔分钟；不设 = 不限 | 可选 | 写进 `wrangler.toml [vars]`（不敏感，可入库） |
 
-- **最简自用**：填 `ADMIN_KEY` + `JWT_SECRET` 两个即可，其余留空。
-- **密钥值不要写进本仓库任何文件**（仓库公开，写进去即泄露）：`ADMIN_KEY`、`JWT_SECRET` 都在 **CF 后台**设置（Dash → Worker → Settings → **Encrypted Secrets** → 逐个 Add），值由你自己生成、自己保管。
-  生成一段 64 位随机串：终端跑 `openssl rand -hex 32`，把它填入（`ADMIN_KEY` 用做管理口令、`JWT_SECRET` 用作令牌签名密钥，两者各自生成、别混用）。
-- ⚠️ **公开仓库请务必用加密 Secret**：若改用「明文 Variable」，值写进 CF 后台的 Variables 会被 CI 的 `wrangler deploy` 清掉，只能写进 `wrangler.toml [vars]` 才持久——而那会随仓库公开，等于泄露。故公开仓库选**加密 Secret**（部署不会清、不进 git）。
+- **最简自用**：只设 `ADMIN_KEY` + `JWT_SECRET` 两个加密 Secret 即可，其余全跳过。
+- **密钥值不要写进本仓库任何文件**（仓库公开，写进去即泄露）：`ADMIN_KEY`、`JWT_SECRET` 都在 **CF 后台**设置（Dash → Worker → Settings → **Encrypted Secrets** → 逐个 Add），值由你自己生成、自己保管，**另存一份私人备忘**（加密 Secret 添加后控制台读不回值，忘价值只能整值重设）。
+  生成一段 64 位随机串：终端跑 `openssl rand -hex 32`，把它填入（`ADMIN_KEY`、`JWT_SECRET` 各自生成，别用同一个；`ADMIN_KEY` 别用弱口令如人名拼音）。
+- ⚠️ **为什么敏感值必须用加密 Secret、不能用明文 Variable**：本仓库接了 GitHub 自动部署，每次构建都执行 `wrangler deploy`，而 `wrangler.toml` 里没有 `[vars]` 段——**部署会按 toml 全量同步、清掉后台所有明文 Variable**。加密 Secret 不受影响、部署永远保留，且不进 git，是公开仓库下唯一"可见性换安全"的取舍：控制台看不到值，但你自己有备忘。
 - ⚠️ 备份导出/导入是**明文**的，**不需要** `BACKUP_SECRET`（老版本曾需要，现已移除）。
 - ⚠️ **更换 `JWT_SECRET` 会让当前所有用户的登录态全部失效**，需各自重新登录一次（前端会自动清掉失效令牌）。
 
@@ -162,6 +165,66 @@ npx wrangler deploy
 ```
 
 验证：`curl https://你的地址/api/health`。
+
+## wrangler.toml 配置说明
+
+`wrangler.toml` 是 Worker 的"总开关"，告诉 Cloudflare：程序入口在哪、连哪个数据库、静态文件怎么托管、要不要开日志。完整配置如下（**敏感密钥不写在这里**，见下方说明）：
+
+```toml
+# ① Worker 名称（全局唯一，也是 CF 控制台里的项目名）
+name = "xiaozhou-ledger-web"
+
+# ② 入口文件：所有 /api 路由、JWT 校验、D1 读写都在这个文件里
+main = "src/index.js"
+
+# ③ 运行时行为版本（像 Node LTS），保持即可，别随意升 "latest"
+compatibility_date = "2026-11-14"
+
+# ④ D1 数据库绑定：代码里用 env.DB 访问；fork 后【必须】把 database_id 换成你自己的
+[[d1_databases]]
+binding = "DB"
+database_name = "xiaozhou-ledger-web"
+database_id = "<你的 D1 数据库 UUID>"
+
+# ⑤ 静态资源托管（单域名方案）：www/ 下的文件直接下发，不走 Worker
+[assets]
+directory = "www"                              # 静态根目录
+binding = "ASSETS"                             # 代码里读静态文件的句柄
+not_found_handling = "single-page-application"  # 未匹配路径回落 index.html（SPA 深链）
+run_worker_first = ["/api/*"]                 # 这些路径先走 Worker 代码、再查静态
+
+# ⑥ 可观测性：开启后 CF 记录日志/追踪，免费版保留 7 天，方便排查
+[observability]
+enabled = true
+```
+
+**每个字段的作用：**
+
+| 字段 | 作用 | 注意事项 |
+| --- | --- | --- |
+| `name` | Worker 标识 | 全局唯一；改它要同步改 CI 构建引用 |
+| `main` | HTTP 请求进来执行的文件 | 本项目的全部后端逻辑 |
+| `compatibility_date` | 锁定运行时行为版本 | 升级 Cloudflare 新特性时才改 |
+| `[[d1_databases]].binding` | 代码里的库句柄名（`env.DB`） | 与 `src/index.js` 里的引用一致即可 |
+| `[[d1_databases]].database_id` | 连到哪份数据 | **fork 后必改**成自己的 UUID，否则连到别人的库 |
+| `[assets].directory` | 静态文件根目录 | 即编译好的前端 `www/` |
+| `[assets].not_found_handling` | 找不到文件时怎么办 | `single-page-application` 让前端路由深链可打开 |
+| `[assets].run_worker_first` | 哪些路径优先走 Worker | `/api/*` 全由后端处理，不走静态 |
+| `[observability].enabled` | 是否记录日志 | 排查问题很有用，建议开 |
+
+**敏感变量怎么办（`ADMIN_KEY`、`JWT_SECRET`）：**
+
+- **不要写进本文件**。仓库公开，写进去就等于公开了密钥。
+- 它们在 **CF 后台 → Worker → Settings → Encrypted Secrets** 里设置（见[第 4 步](#第-4-步配置环境变量与密钥)）。加密 Secret 不受 `wrangler deploy` 影响、不进 git。
+- 只有**非敏感**的可选参数（`MAX_ACCOUNTS`、`REGISTER_COOLDOWN_MINUTES`）才建议写进本文件的 `[vars]` 段（随仓库走、部署保留）：
+
+  ```toml
+  [vars]
+  MAX_ACCOUNTS = "100"
+  REGISTER_COOLDOWN_MINUTES = "60"
+  ```
+
+> ⚠️ 记住这个坑：**明文 Variable 若没写进 `wrangler.toml [vars]`，每次 `wrangler deploy`（CI 自动部署）都会把它清掉**；而加密 Secret 不会被清。所以公开仓库 + CI 场景，敏感值一律走加密 Secret。
 
 ## 管理后台
 
@@ -276,7 +339,9 @@ npx wrangler d1 execute xiaozhou-ledger-web --remote --file=fix-account-keys.sql
 - **首页显示"无法识别身份/页面加载异常"**：多半是浏览器缓存了旧版页面。强制刷新（Ctrl+F5）；若是刚设置/更换了 `JWT_SECRET`，会自动清除失效登录态，重新登录一次即可。
 - **`/api/health` 的 `dbReady` 是 false**：数据库还没建表。随便请求一次任意 `/api` 接口会触发自动建表；或手动执行 `schema.sql`。确认 `wrangler.toml` 的 `database_id` 填的是你自己的库。
 - **导出备份报 400／"未配置密钥"**：当前版本备份是明文，**不需要**任何密钥。若还看到这个报错，说明部署的还是旧代码，重新部署最新代码。
-- **`/admin` 打不开或登录失败**：确认已设置 Secret `ADMIN_KEY`，且输入的值与 Dashboard 里完全一致（注意空格/换行）。
+- **`/admin` 打不开或登录失败**：确认已设置加密 Secret `ADMIN_KEY`，且输入的值与你设的完全一致（注意空格/换行）。若刚做过一次 CI 部署后登录失败，多半是误用了明文 Variable 被部署清掉了，改回加密 Secret 即可。
+- **加密 Secret 在控制台看不到值**：这是 Cloudflare 的设计，值只在添加那一刻显示一次，之后只能整值覆盖、无法回看。忘了值就翻你自己留的私密备忘，或在后台直接重新设一个新值（`wrangler deploy` 后生效）。**不要用明文 Variable 来"留个能看的"——公开仓库 + CI 场景下明文 Variable 每次部署会被清空。**
+- **改了后台变量/密钥但没生效**：加密 Secret 修改后必须**触发一次部署**（往 GitHub push 任意改动，或本地 `npx wrangler deploy`）才应用到运行中的 Worker；单纯在后台改值不部署，运行中仍是旧值。
 - **小程序连不上**：设置页确认接口密钥已生成、端口正确；换过密钥要在小程序重新绑定。
 - **注册报"尝试过于频繁"**：同一手机号连续输错密码 20 次会封 5 分钟（内存级），等一会儿或让管理员重置密码。
 
