@@ -107,6 +107,7 @@ const DDL = [
 
   // 全栈操作审计日志（记录所有用户/管理员的读写增删改查、配置、登录注册等）。
   // 由 Worker 在请求边界自动写入（best-effort，写失败不影响主流程）。
+  // ua = 客户端 User-Agent（截断），便于区分人/脚本与事故取证。
   `CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL,
@@ -118,10 +119,17 @@ const DDL = [
     status INTEGER NOT NULL DEFAULT 0,
     ok INTEGER NOT NULL DEFAULT 1,
     ip TEXT NOT NULL DEFAULT '',
+    ua TEXT NOT NULL DEFAULT '',
     detail TEXT NOT NULL DEFAULT ''
   )`,
   `CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts)`,
   `CREATE INDEX IF NOT EXISTS idx_logs_actor ON logs(actor)`,
+
+  // 管理员级运行参数（key/value）：log_retention_days（日志保留天数，默认 30）、last_log_purge_at（上次惰性清理时间）
+  `CREATE TABLE IF NOT EXISTS admin_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`,
 ];
 
 // 旧库升级（列已存在则报错，逐条跳过）
@@ -129,6 +137,7 @@ const LEGACY_MIGRATIONS = [
   `ALTER TABLE events ADD COLUMN account TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE gifts ADD COLUMN account TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE feedback ADD COLUMN account TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE logs ADD COLUMN ua TEXT NOT NULL DEFAULT ''`,
 ];
 
 /**

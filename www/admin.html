@@ -143,17 +143,35 @@
     <!-- ④ 全栈操作日志 -->
     <div class="card" id="logCard">
       <h2>全栈操作日志</h2>
-      <p class="desc">自动记录所有用户的读写增删改查、配置修改、登录注册、备份等动作（含操作人、结果码、IP）。可按操作人/动作筛选；「清理旧日志」删除 N 天前的记录。</p>
+      <p class="desc">自动记录所有用户的写操作、登录注册、配置修改、备份与管理动作（含操作人、结果码、IP、设备标识）。纯只读刷页面与 /api/health 不记录，以省配额。支持按操作人/动作/时间筛选、导出与清理。</p>
+
+      <!-- 日志生命周期设置 -->
+      <div class="inline" style="margin-bottom:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#faf7f2">
+        <span style="font-size:12px;color:var(--sub)">日志保留</span>
+        <input id="lgRetention" type="number" min="1" max="365" value="30" style="width:70px">
+        <span style="font-size:12px;color:var(--sub)">天</span>
+        <button class="btn sm" id="lgRetentionSave">保存</button>
+        <span style="font-size:11px;color:var(--sub)" id="lgRetentionInfo"></span>
+      </div>
+
+      <!-- 筛选 + 操作 -->
       <div class="inline" style="margin-bottom:12px">
-        <input id="lgActor" placeholder="操作人，如 138 / admin" autocomplete="off" style="width:160px">
-        <input id="lgAction" placeholder="动作，如 gift.create" autocomplete="off" style="width:170px">
+        <input id="lgActor" placeholder="操作人，如 138 / admin" autocomplete="off" style="width:140px">
+        <input id="lgAction" placeholder="动作，如 gift.create" autocomplete="off" style="width:150px">
+        <input id="lgFrom" type="date" title="起始日期" style="width:140px">
+        <input id="lgTo" type="date" title="截止日期" style="width:140px">
         <select id="lgLimit"><option value="50">每页 50</option><option value="100">每页 100</option><option value="200">每页 200</option></select>
         <button class="btn sm" id="lgQueryBtn">查询</button>
-        <button class="btn danger sm" id="lgPurgeBtn">清理旧日志</button>
       </div>
+      <div class="inline" style="margin-bottom:12px">
+        <button class="btn ghost sm" id="lgExportBtn">导出日志</button>
+        <button class="btn danger sm" id="lgPurgeBtn">立即清理（按保留天数）</button>
+        <span class="msg" id="lgPurgeMsg" style="margin:0"></span>
+      </div>
+
       <div class="tbl-wrap">
         <table>
-          <thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>方法/路径</th><th class="num">结果</th><th>IP</th><th>备注</th></tr></thead>
+          <thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>方法/路径</th><th class="num">结果</th><th>IP</th><th>设备</th><th>备注</th></tr></thead>
           <tbody id="logRows"></tbody>
         </table>
       </div>
@@ -643,6 +661,8 @@
     var p=new URLSearchParams({page:String(logPage),limit:String(logLimit)});
     var a=$('lgActor').value.trim();if(a)p.set('actor',a);
     var act=$('lgAction').value.trim();if(act)p.set('action',act);
+    var from=$('lgFrom').value;if(from)p.set('from',from);
+    var to=$('lgTo').value;if(to)p.set('to',to);
     api('/api/admin/logs?'+p.toString(),'GET')
       .then(function(d){
         var logs=d.logs||[];
@@ -654,32 +674,64 @@
             '<td style="font-size:12px">'+esc(l.method)+' <span style="color:var(--sub)">'+esc(l.path)+'</span></td>'+
             '<td class="num">'+(l.ok?'<span class="tag ok">'+l.status+'</span>':'<span class="tag err">'+l.status+'</span>')+'</td>'+
             '<td style="font-family:monospace;font-size:12px">'+esc(l.ip)+'</td>'+
+            '<td class="wrap" style="font-size:11px;max-width:220px">'+esc(l.ua)+'</td>'+
             '<td class="wrap" style="font-size:12px">'+esc(l.detail)+'</td>'+
             '</tr>';
         }).join('');
-        $('logRows').innerHTML=rows||'<tr><td colspan="7" style="text-align:center;color:#8a8178">暂无日志</td></tr>';
+        $('logRows').innerHTML=rows||'<tr><td colspan="8" style="text-align:center;color:#8a8178">暂无日志</td></tr>';
         var pages=Math.max(1,Math.ceil((d.total||0)/logLimit));
         $('logPager').innerHTML=
           '<button class="btn ghost sm" '+(logPage<=1?'disabled':'')+' onclick="__logPage('+(logPage-1)+')">上一页</button>'+
           '<span>'+logPage+' / '+pages+' · 共 '+(d.total||0)+' 条</span>'+
           '<button class="btn ghost sm" '+(logPage>=pages?'disabled':'')+' onclick="__logPage('+(logPage+1)+')">下一页</button>';
       })
-      .catch(function(e){$('logRows').innerHTML='<tr><td colspan="7" style="text-align:center;color:#c0392b">'+esc(e.message)+'</td></tr>';});
+      .catch(function(e){$('logRows').innerHTML='<tr><td colspan="8" style="text-align:center;color:#c0392b">'+esc(e.message)+'</td></tr>';});
   }
   window.__logPage=function(n){loadLogs(Math.max(1,n));};
   $('lgQueryBtn').onclick=function(){logLimit=Number($('lgLimit').value);loadLogs(1);};
   $('lgPurgeBtn').onclick=function(){
-    var v=prompt('清理多少天前的日志？（例如 30）','30');
-    if(v===null)return;
-    var days=parseInt(v,10);
-    if(!Number.isFinite(days)||days<1){toast('请输入正整数天数');return;}
+    var days=$('lgRetention').value;
+    if(!confirm('立即清理 '+days+' 天前的日志？（也可等待系统每小时自动清理）'))return;
     api('/api/admin/logs/purge','POST',{days:days})
-      .then(function(d){toast('已清理 '+d.purged+' 条旧日志');loadLogs(1);})
+      .then(function(d){msg('lgPurgeMsg','已清理 '+d.purged+' 条旧日志','ok');loadLogs(1);})
+      .catch(function(e){msg('lgPurgeMsg',e.message,'err')});
+  };
+  $('lgExportBtn').onclick=function(){
+    var q=new URLSearchParams({});
+    var from=$('lgFrom').value;if(from)q.set('from',from);
+    var to=$('lgTo').value;if(to)q.set('to',to);
+    var a=$('lgActor').value.trim();if(a)q.set('actor',a);
+    var qs=q.toString();
+    // 导出接口需带管理 token，用 fetch 下载（带 token 可靠）
+    fetch('/api/admin/logs/export'+(qs?'?'+qs:''),{headers:{'X-Admin-Token':token()}})
+      .then(function(r){if(!r.ok)throw new Error('导出失败 '+r.status);return r.blob();})
+      .then(function(blob){
+        var url=URL.createObjectURL(blob),an=document.createElement('a');
+        an.href=url;an.download='人情录-操作日志-'+new Date().toISOString().slice(0,10)+'.json';
+        an.click();URL.revokeObjectURL(url);toast('日志已导出');
+      }).catch(function(e){toast(e.message)});
+  };
+
+  /* 日志保留天数（读/写） */
+  function loadRetention(){
+    api('/api/admin/settings','GET')
+      .then(function(d){
+        $('lgRetention').value=d.logRetentionDays||30;
+        var extra=' · 当前 '+d.logCount+' 条';
+        if(d.lastLogPurgeAt) extra+=' · 上次自动清理 '+fmtDate(d.lastLogPurgeAt);
+        $('lgRetentionInfo').textContent=extra;
+      }).catch(function(){});
+  }
+  $('lgRetentionSave').onclick=function(){
+    var days=parseInt($('lgRetention').value,10);
+    if(!Number.isFinite(days)||days<1||days>365){toast('保留天数需为 1–365');return;}
+    api('/api/admin/settings','POST',{logRetentionDays:days})
+      .then(function(){toast('已保存：日志保留 '+days+' 天');loadRetention();})
       .catch(function(e){toast(e.message)});
   };
 
   /* 启动：有 token 直接进主界面并验证 */
-  if(token()){ showMain(); loadUsers(); loadLogs(1); } else { showLogin(); }
+  if(token()){ showMain(); loadUsers(); loadLogs(1); loadRetention(); } else { showLogin(); }
 })();
 </script>
 </body>

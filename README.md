@@ -237,7 +237,7 @@ enabled = true
 - **账号数据管理（按账号编辑）**：输入某用户手机号即可载入该账号，分页查看（默认 20 条/页）并**增删改其礼金、活动**；编辑其 **AI/小程序配置**（baseUrl、模型、API Key）、**小程序接口密钥**（重新生成/改端口/清空）、**设备绑定**（解除指定设备）。
 - **单账号导入/导出**：对任意单个账号做独立的全栈备份导出与导入（含账本、AI 配置、密钥），不触碰其他账号。
 - **全站备份/还原**：导出全站数据（所有用户 + 账本 + 配置）为明文 JSON；导入时可选「合并」（保留现有数据）或「覆盖还原」（清空后重建）。换实例迁移、灾难恢复都靠它。
-- **全栈操作日志**：系统自动记录**所有用户**的读写增删改查、配置修改、登录注册、备份等动作（操作人、结果码、IP、备注）。后台可按操作人/动作筛选、分页查看，并可一键清理 N 天前的旧日志。
+- **全栈操作日志**：系统自动记录**所有用户**的写操作、登录注册、配置修改、备份等动作（含操作人、结果码、IP、设备标识）；纯只读刷页面与 `/api/health` 自动跳过以省配额。后台可按操作人/动作/**起止日期**筛选、**导出日志为 JSON**、设「日志保留天数」（默认 30，系统惰性自动清理过期日志）并一键手动清理。
 
 > ⚠️ `ADMIN_KEY` 权限极高（能改所有人密码、删所有数据、导出全站），务必用强随机串，不要用弱口令。
 
@@ -260,8 +260,13 @@ curl -X POST https://你的域名/api/admin/purge-account \
 ### 全栈操作日志
 
 - 记录位置：管理后台 →「全栈操作日志」卡片。数据存于 D1 的 `logs` 表（随首次请求自动建表），写入是 best-effort——日志写失败绝不影响业务主流程。
-- 记录范围：所有 `/api` 请求，含普通用户与管理员。读类记 `read`，写类按动作细分（`register`/`login`/`event.create`/`gift.update`/`ai.config.save`/`apikey.rotate`/`admin.login` 等），并带操作人（`user:手机号` / `dev:设备号` / `admin` / `anonymous`）、HTTP 状态码、结果成败、来源 IP。
-- 维护：`logs` 会随使用增长，后台「清理旧日志」按天批量删除（如清理 30 天前记录）；也可命令行 `DELETE FROM logs WHERE ts < ?`。
+- **记录什么（降级矩阵，省 D1 写配额）**：
+  - **必记**：写类（活动/礼金增删改）、登录/注册、改昵称/密码/手机号/解绑设备、AI 配置与接口密钥操作、备份导入导出、意见反馈，以及**所有失败请求（401/403/404/429/5xx，含撞库信号）**，还有管理员的**全部**操作。
+  - **跳过（纯只读 GET 不记）**：`/api/health`、`/api/session`、`/api/account/check`、`/api/overview`、活动/礼金/联系人的分页读取、CSV/年度报告、配置与密钥的"查询"等高频刷页面请求——它们不改变数据，不记日志，避免写放大挤占免费配额。
+  - 每条含：操作人（`user:手机号`/`dev:设备号`/`admin`/`anonymous`）、动作、方法/路径、HTTP 状态码、成败、**来源 IP**、**设备标识（User-Agent）**、备注。
+- **日志保留时长**：后台设「日志保留 X 天」（默认 30，1–365 可调，存于 `admin_settings`）。系统会在每次管理操作时**惰性自动清理**超过保留天数的旧日志（内部 1 小时节流，无需 Cloudflare 定时任务）；也可随时点「立即清理」手动清。
+- **导出日志**：后台「导出日志」可把日志（可按起止日期/操作人过滤）下载为 JSON，便于存档或离线分析。
+- **筛选**：后台日志页支持按操作人、动作、**起止日期**筛选 + 分页。
 
 ## 日常使用
 
@@ -327,8 +332,11 @@ curl -X POST https://你的域名/api/admin/purge-account \
 | POST | `/api/admin/account/device` | 按账号解除设备绑定（`phone`+`deviceId`） |
 | GET | `/api/admin/account/export?phone=` | 单账号全栈备份导出 |
 | POST | `/api/admin/account/import?phone=` | 单账号全栈备份导入（multipart：`file`） |
-| GET | `/api/admin/logs?limit=&page=&actor=&action=` | 全栈操作日志（分页 + 按操作人/动作过滤） |
+| GET | `/api/admin/logs?limit=&page=&actor=&action=&from=&to=` | 全栈操作日志（分页 + 按操作人/动作/起止日期过滤） |
+| GET | `/api/admin/logs/export?from=&to=&actor=` | 导出日志为 JSON 文件（可按起止日期/操作人过滤） |
 | POST | `/api/admin/logs/purge` | 清理 N 天前日志（`{days}`） |
+| GET | `/api/admin/settings` | 读管理员运行参数（日志保留天数、上次清理时间、日志条数） |
+| POST | `/api/admin/settings` | 存管理员运行参数（`{logRetentionDays}`，1–365） |
 | POST | `/api/admin/reset-password`、`/api/admin/purge-account` | 命令行管理（需 `X-Admin-Key`） |
 
 **用户认证头**（按优先级）：`X-Api-Key`/`X-Token`/`Authorization: Bearer`（JWT 或小程序密钥）→ `X-Ledger-Token`（设备/游客）。不同账号数据相互隔离。

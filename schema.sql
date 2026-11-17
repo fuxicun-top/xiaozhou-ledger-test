@@ -123,7 +123,14 @@ CREATE TABLE IF NOT EXISTS logs (
   status INTEGER NOT NULL DEFAULT 0,
   ok INTEGER NOT NULL DEFAULT 1,
   ip TEXT NOT NULL DEFAULT '',
+  ua TEXT NOT NULL DEFAULT '',
   detail TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts);
 CREATE INDEX IF NOT EXISTS idx_logs_actor ON logs(actor);
+
+-- 管理员级运行参数（key/value）：log_retention_days（日志保留天数，默认 30）、last_log_purge_at（上次惰性清理时间，ISO）
+CREATE TABLE IF NOT EXISTS admin_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);

@@ -154,6 +154,7 @@ function classifyAction(method, path) {
     if (p.startsWith('admin/reset-password')) return 'admin.reset-password';
     if (p.startsWith('admin/purge-account')) return 'admin.purge-account';
     if (p.startsWith('admin/account')) return 'admin.account';
+    if (p.startsWith('admin/settings')) return 'admin.settings';
     if (p.startsWith('admin/logs')) return 'admin.logs';
     return 'write';
   }
@@ -196,13 +197,35 @@ function clientIp(request) {
   return real || '-';
 }
 
-/** 写一条审计日志（best-effort：任何异常都吞掉，绝不影响主流程）。 */
-async function recordLog(env, entry) {
+/** 取客户端 User-Agent（截断，用于区分人/脚本与事故取证）。 */
+function uaOf(request) {
+  return asString((request.headers.get('User-Agent') || '').trim(), 80);
+}
+
+/**
+ * 审计日志降级矩阵：返回 true 表示「跳过不记」。
+ *  - 管理员操作：全记（低频、高价值）
+ *  - 失败（status>=400，含 401/403/404/429/5xx）：全记（撞库/越权信号）
+ *  - 写类（POST/PUT/DELETE）：全记（状态变更）
+ *  - 纯只读 GET（含 health/session/check/overview/列表/CSV/配置查询等）：跳过（砍写放大，
+ *    给真实业务写留配额余量；人情定量级下高频只读刷页面不产生审计价值）
+ */
+function shouldSkipRecord(entry) {
+  if (entry.actor === 'admin') return false;
+  if ((Number(entry.status) || 0) >= 400) return false;
+  const m = entry.method || '';
+  if (m && m !== 'GET') return false;
+  return true;
+}
+
+/** 写一条审计日志（best-effort：任何异常都吞掉，绝不影响主流程；按降级矩阵决定记不记）。 */
+async function recordLog(env, entry, request) {
   try {
     if (!env.DB) return;
+    if (shouldSkipRecord(entry)) return;
     await env.DB.prepare(
-      `INSERT INTO logs (ts, actor, action, target, method, path, status, ok, ip, detail)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO logs (ts, actor, action, target, method, path, status, ok, ip, ua, detail)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       nowIso(),
       entry.actor || '',
@@ -213,6 +236,7 @@ async function recordLog(env, entry) {
       Number(entry.status) || 0,
       entry.ok ? 1 : 0,
       entry.ip || '',
+      entry.ua || (request ? uaOf(request) : ''),
       asString(entry.detail || '', 500)
     ).run();
   } catch {
@@ -1159,7 +1183,7 @@ async function handleAdminAccountImport(request, env, origin) {
   return handleImportBackup(request, env, target.account, origin);
 }
 
-/** 管理员查看全栈操作日志（分页 + 按 actor/action 过滤）。 */
+/** 管理员查看全栈操作日志（分页 + 按 actor/action/起止日期 过滤）。 */
 async function handleAdminLogs(request, env, origin) {
   const url = new URL(request.url);
   let limit = Number.parseInt(url.searchParams.get('limit') || '50', 10);
@@ -1169,16 +1193,20 @@ async function handleAdminLogs(request, env, origin) {
   if (!Number.isFinite(page) || page < 1) page = 1;
   const actor = asString(url.searchParams.get('actor'), 40).trim();
   const action = asString(url.searchParams.get('action'), 40).trim();
+  const from = asString(url.searchParams.get('from'), 12).trim(); // YYYY-MM-DD 或 ISO
+  const to = asString(url.searchParams.get('to'), 12).trim();
   const clauses = [];
   const params = [];
   if (actor) { clauses.push('actor LIKE ?'); params.push('%' + actor + '%'); }
   if (action) { clauses.push('action = ?'); params.push(action); }
+  if (from) { clauses.push('ts >= ?'); params.push(from); }
+  if (to) { clauses.push('ts <= ?'); params.push(to.length === 10 ? to + 'T23:59:59.999Z' : to); }
   const where = clauses.length ? ' WHERE ' + clauses.join(' AND ') : '';
   const totalRes = await env.DB.prepare(`SELECT COUNT(*) AS n FROM logs${where}`).bind(...params).first();
   const total = (totalRes && Number(totalRes.n)) || 0;
   const off = (page - 1) * limit;
   const rowsRes = await env.DB.prepare(
-    `SELECT id, ts, actor, action, target, method, path, status, ok, ip, detail
+    `SELECT id, ts, actor, action, target, method, path, status, ok, ip, ua, detail
      FROM logs${where} ORDER BY id DESC LIMIT ? OFFSET ?`
   ).bind(...params, limit, off).all();
   return jsonRes({ page, limit, total, logs: rowsRes.results || [] }, 200, origin);
@@ -1194,6 +1222,113 @@ async function handleAdminLogsPurge(request, env, origin) {
   const res = await env.DB.prepare('DELETE FROM logs WHERE ts < ?').bind(cutoff).run();
   return jsonRes({ purged: (res && res.meta && res.meta.changes) || 0, days }, 200, origin);
 }
+
+/* ---------- 管理员运行参数（admin_settings key/value）与日志生命周期管理 ---------- */
+
+const LOG_RETENTION_DEFAULT = 30; // 日志默认保留 30 天
+const LOG_PURGE_THROTTLE_MS = 3600000; // 惰性清理节流：每小时最多 1 次
+
+/** 读 admin_settings；表/键缺失返回 def。 */
+async function getAdminSetting(env, key, def) {
+  try {
+    const row = await env.DB.prepare('SELECT value FROM admin_settings WHERE key = ?').bind(key).first();
+    return row ? row.value : def;
+  } catch {
+    return def;
+  }
+}
+
+/** 写 admin_settings（upsert）。 */
+async function setAdminSetting(env, key, value) {
+  await env.DB.prepare(
+    `INSERT INTO admin_settings (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).bind(key, String(value)).run();
+}
+
+/** 日志保留天数（正整数，1–365，非法回退默认 30）。 */
+async function logRetentionDays(env) {
+  const raw = Number.parseInt(await getAdminSetting(env, 'log_retention_days', String(LOG_RETENTION_DEFAULT)), 10);
+  if (!Number.isFinite(raw) || raw < 1 || raw > 365) return LOG_RETENTION_DEFAULT;
+  return raw;
+}
+
+/** 惰性自动清理：距上次清理 >= 1 小时才删一次"保留天数以外"的旧日志。best-effort。 */
+async function maybeLazyPurgeLogs(env, request) {
+  try {
+    if (!env.DB) return;
+    const last = await getAdminSetting(env, 'last_log_purge_at', '0');
+    const lastMs = Date.parse(last) || 0;
+    if (Date.now() - lastMs < LOG_PURGE_THROTTLE_MS) return; // 节流：一小时最多 1 次
+    const days = await logRetentionDays(env);
+    const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+    await env.DB.prepare('DELETE FROM logs WHERE ts < ?').bind(cutoff).run();
+    await setAdminSetting(env, 'last_log_purge_at', nowIso());
+  } catch {
+    /* 清理失败不影响业务 */
+  }
+}
+
+/** 查看管理员运行参数（含日志保留天数 + 上次惰性清理时间 + 当前日志条数）。 */
+async function handleAdminSettingsGet(env, origin) {
+  const days = await logRetentionDays(env);
+  const last = await getAdminSetting(env, 'last_log_purge_at', '');
+  let count = 0;
+  try {
+    const r = await env.DB.prepare('SELECT COUNT(*) AS n FROM logs').first();
+    count = (r && Number(r.n)) || 0;
+  } catch {}
+  return jsonRes({ logRetentionDays: days, lastLogPurgeAt: last, logCount: count }, 200, origin);
+}
+
+/** 保存管理员运行参数（logRetentionDays 1–365）。 */
+async function handleAdminSettingsSave(request, env, origin) {
+  const body = await readJson(request);
+  if (!body) return fail('请求内容格式错误', 400, origin);
+  const days = Number.parseInt(asString(body.logRetentionDays, 10), 10);
+  if (!Number.isFinite(days) || days < 1 || days > 365) return fail('保留天数需为 1–365 的正整数', 400, origin);
+  await setAdminSetting(env, 'log_retention_days', String(days));
+  return jsonRes({ logRetentionDays: days, saved: true }, 200, origin);
+}
+
+/** 导出日志（可按 from/to/actor 过滤）为可下载 JSON 文件。 */
+async function handleAdminLogsExport(request, env, origin) {
+  const url = new URL(request.url);
+  const from = asString(url.searchParams.get('from'), 12).trim();
+  const to = asString(url.searchParams.get('to'), 12).trim();
+  const actor = asString(url.searchParams.get('actor'), 40).trim();
+  const clauses = [];
+  const params = [];
+  if (actor) { clauses.push('actor LIKE ?'); params.push('%' + actor + '%'); }
+  if (from) { clauses.push('ts >= ?'); params.push(from); }
+  if (to) { clauses.push('ts <= ?'); params.push(to.length === 10 ? to + 'T23:59:59.999Z' : to); }
+  const where = clauses.length ? ' WHERE ' + clauses.join(' AND ') : '';
+  const res = await env.DB.prepare(
+    `SELECT ts, actor, action, target, method, path, status, ok, ip, ua, detail
+     FROM logs${where} ORDER BY id ASC LIMIT 20000`
+  ).bind(...params).all();
+  const rows = (res.results || []).map((l) => ({
+    ...l,
+    ok: Boolean(l.ok),
+  }));
+  const payload = {
+    service: 'xiaozhou-ledger-web',
+    exportedAt: nowIso(),
+    filter: { from: from || null, to: to || null, actor: actor || null },
+    count: rows.length,
+    logs: rows,
+  };
+  const body = JSON.stringify(payload, null, 2);
+  const fname = '人情录-操作日志-' + new Date().toISOString().slice(0, 10) + '.json';
+  return new Response(body, {
+    status: 200,
+    headers: Object.assign(corsHeaders(origin), {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(fname),
+    }),
+  });
+}
+
 
 async function handleAccountUnbindDevice(request, env, identity, origin) {
   // 登出/退出：只清除本地登录态。Web 账号的"信任本设备"即 JWT（localStorage 存了 7 天），
@@ -2603,7 +2738,6 @@ async function apiRequest(request, env) {
           200,
           origin
         );
-        await recordLog(env, { actor: 'anonymous', action: 'health', target: '', method: 'GET', path, status: res.status, ok: true, ip, detail: '' });
         return res;
       }
 
@@ -2611,39 +2745,43 @@ async function apiRequest(request, env) {
       if (path === '/api/account/register' && request.method === 'POST') {
         const identity = await resolveIdentity(request, env);
         const res = await handleAccountRegister(request, env, identity, origin);
-        await recordLog(env, { actor: identity ? (identity.phone ? `user:${identity.phone}` : actorOf(identity, false)) : 'anonymous', action: 'register', target: '', method: 'POST', path, status: res.status, ok: res.status < 400, ip, detail: '' });
+        const regPhone = (res.status < 400 && identity && identity.phone) ? String(identity.phone) : '';
+        const regActor = regPhone ? `user:${regPhone}` : 'anonymous';
+        await recordLog(env, { actor: regActor, action: 'register', target: regPhone, method: 'POST', path, status: res.status, ok: res.status < 400, ip, detail: res.status >= 400 ? '注册失败 ' + res.status : (regPhone ? '新注册 ' + regPhone : '') }, request);
         return res;
       }
       if (path === '/api/account/login' && request.method === 'POST') {
         const res = await handleAccountLogin(request, env, origin);
         let actor = 'anonymous';
+        let phoneForLog = '';
         try {
           const b = await request.json();
-          if (b && b.phone) actor = `user:${String(b.phone)}`;
+          if (b && b.phone) { actor = `user:${String(b.phone)}`; phoneForLog = String(b.phone); }
         } catch {}
-        await recordLog(env, { actor, action: 'login', target: '', method: 'POST', path, status: res.status, ok: res.status < 400, ip, detail: '' });
+        const loginDetail = res.status < 400 ? '登录成功 ' + phoneForLog : ({ 404: '未注册', 403: '密码错误', 429: '频繁锁定' }[res.status] || '失败') + ' ' + phoneForLog;
+        await recordLog(env, { actor, action: 'login', target: phoneForLog, method: 'POST', path, status: res.status, ok: res.status < 400, ip, detail: loginDetail }, request);
         return res;
       }
       if (path === '/api/account/check' && request.method === 'GET') {
         const res = await handleAccountCheck(request, env, origin);
-        await recordLog(env, { actor: 'anonymous', action: 'read', target: '', method: 'GET', path, status: res.status, ok: res.status < 400, ip, detail: '' });
+        await recordLog(env, { actor: 'anonymous', action: 'read', target: '', method: 'GET', path, status: res.status, ok: res.status < 400, ip, detail: '' }, request);
         return res;
       }
       // ---- 管理后台（账号密码登录，独立于普通用户体系）----
       if (path === '/api/admin/login' && request.method === 'POST') {
         const res = await handleAdminLogin(request, env, origin);
-        await recordLog(env, { actor: 'admin', action: 'admin.login', target: '', method: 'POST', path, status: res.status, ok: res.status < 400, ip, detail: '' });
+        await recordLog(env, { actor: 'admin', action: 'admin.login', target: '', method: 'POST', path, status: res.status, ok: res.status < 400, ip, detail: res.status < 400 ? 'admin 登录成功' : 'admin 登录失败/未配置' }, request);
         return res;
       }
       // 命令行管理接口：用 X-Admin-Key 鉴权，必须放在下面 X-Admin-Token 拦截之前
       if (path === '/api/admin/reset-password' && request.method === 'POST') {
         const res = await handleAdminResetPassword(request, env, origin);
-        await recordLog(env, { actor: 'admin', action: 'admin.reset-password', target: '', method: 'POST', path, status: res.status, ok: res.status < 400, ip, detail: '' });
+        await recordLog(env, { actor: 'admin', action: 'admin.reset-password', target: '', method: 'POST', path, status: res.status, ok: res.status < 400, ip, detail: '重置账号密码' }, request);
         return res;
       }
       if (path === '/api/admin/purge-account' && request.method === 'POST') {
         const res = await handleAdminPurge(request, env, origin);
-        await recordLog(env, { actor: 'admin', action: 'admin.purge-account', target: '', method: 'POST', path, status: res.status, ok: res.status < 400, ip, detail: '' });
+        await recordLog(env, { actor: 'admin', action: 'admin.purge-account', target: '', method: 'POST', path, status: res.status, ok: res.status < 400, ip, detail: '清空账号全部数据' }, request);
         return res;
       }
 
@@ -2652,12 +2790,14 @@ async function apiRequest(request, env) {
         const isAdmin = await verifyAdminToken(request, env);
         if (!isAdmin) {
           const res = fail('管理员身份无效或已过期，请重新登录', 401, origin);
-          await recordLog(env, { actor: 'admin', action: classifyAction(request.method, path), target: '', method: request.method, path, status: 401, ok: false, ip, detail: '鉴权失败' });
+          await recordLog(env, { actor: 'admin', action: classifyAction(request.method, path), target: '', method: request.method, path, status: 401, ok: false, ip, detail: '鉴权失败' }, request);
           return res;
         }
-        const adminLog = async (resOrPromise, detail) => {
+        // 惰性清理：admin 请求时顺手把超过保留天数的旧日志删掉（内部 1 小时节流，best-effort）
+        await maybeLazyPurgeLogs(env, request);
+        const adminLog = async (resOrPromise, detail, target) => {
           const res = await resOrPromise;
-          await recordLog(env, { actor: 'admin', action: classifyAction(request.method, path), target: '', method: request.method, path, status: res.status, ok: res.status < 400, ip, detail: detail || '' });
+          await recordLog(env, { actor: 'admin', action: classifyAction(request.method, path), target: target || '', method: request.method, path, status: res.status, ok: res.status < 400, ip, detail: detail || '' }, request);
           return res;
         };
         if (path === '/api/admin/users' && request.method === 'GET') {
@@ -2679,42 +2819,53 @@ async function apiRequest(request, env) {
           return adminLog(await handleAdminImportAll(request, env, origin));
         }
         // ---- 按账号管理（编辑任意用户的数据/配置 + 单账号导入导出）----
+        const qPhone = path.includes('/api/admin/') ? (new URL(request.url).searchParams.get('phone') || '') : '';
         if (path === '/api/admin/account/data' && request.method === 'GET') {
-          return adminLog(await handleAdminAccountData(request, env, origin));
+          return adminLog(await handleAdminAccountData(request, env, origin), '查 ' + qPhone, qPhone);
         }
         if (path === '/api/admin/account/event' && request.method === 'POST') {
-          return adminLog(await handleAdminAccountEvent(request, env, origin));
+          return adminLog(await handleAdminAccountEvent(request, env, origin), '改活动 ' + qPhone, qPhone);
         }
         if (path === '/api/admin/account/event/delete' && request.method === 'POST') {
-          return adminLog(await handleAdminAccountEventDelete(request, env, origin));
+          return adminLog(await handleAdminAccountEventDelete(request, env, origin), '删活动 ' + qPhone, qPhone);
         }
         if (path === '/api/admin/account/gift' && request.method === 'POST') {
-          return adminLog(await handleAdminAccountGift(request, env, origin));
+          return adminLog(await handleAdminAccountGift(request, env, origin), '改礼金 ' + qPhone, qPhone);
         }
         if (path === '/api/admin/account/gift/delete' && request.method === 'POST') {
-          return adminLog(await handleAdminAccountGiftDelete(request, env, origin));
+          return adminLog(await handleAdminAccountGiftDelete(request, env, origin), '删礼金 ' + qPhone, qPhone);
         }
         if (path === '/api/admin/account/settings' && request.method === 'POST') {
-          return adminLog(await handleAdminAccountSettings(request, env, origin));
+          return adminLog(await handleAdminAccountSettings(request, env, origin), '改配置 ' + qPhone, qPhone);
         }
         if (path === '/api/admin/account/apikey' && request.method === 'POST') {
-          return adminLog(await handleAdminAccountApiKey(request, env, origin));
+          return adminLog(await handleAdminAccountApiKey(request, env, origin), '改密钥 ' + qPhone, qPhone);
         }
         if (path === '/api/admin/account/device' && request.method === 'POST') {
-          return adminLog(await handleAdminAccountDevice(request, env, origin));
+          return adminLog(await handleAdminAccountDevice(request, env, origin), '解绑设备 ' + qPhone, qPhone);
         }
         if (path === '/api/admin/account/export' && request.method === 'GET') {
-          return adminLog(handleAdminAccountExport(request, env, origin));
+          return adminLog(handleAdminAccountExport(request, env, origin), '导出 ' + qPhone, qPhone);
         }
         if (path === '/api/admin/account/import' && request.method === 'POST') {
-          return adminLog(await handleAdminAccountImport(request, env, origin));
+          return adminLog(await handleAdminAccountImport(request, env, origin), '导入 ' + qPhone, qPhone);
         }
         // ---- 全栈操作日志 ----
         if (path === '/api/admin/logs' && request.method === 'GET') {
           return adminLog(handleAdminLogs(request, env, origin));
         }
         if (path === '/api/admin/logs/purge' && request.method === 'POST') {
-          return adminLog(await handleAdminLogsPurge(request, env, origin));
+          return adminLog(await handleAdminLogsPurge(request, env, origin), '清理日志');
+        }
+        if (path === '/api/admin/logs/export' && request.method === 'GET') {
+          return adminLog(handleAdminLogsExport(request, env, origin), '导出日志');
+        }
+        // ---- 管理员运行参数（日志保留天数等）----
+        if (path === '/api/admin/settings' && request.method === 'GET') {
+          return adminLog(handleAdminSettingsGet(env, origin));
+        }
+        if (path === '/api/admin/settings' && request.method === 'POST') {
+          return adminLog(await handleAdminSettingsSave(request, env, origin), '保存运行参数');
         }
       }
 
@@ -2738,10 +2889,10 @@ async function apiRequest(request, env) {
       await ensureIdentity(env, identity);
       const account = accOf(identity);
 
-      // 普通用户请求统一走日志：记录操作人/动作/目标/状态码
+      // 普通用户请求统一走日志：记录操作人/动作/目标/状态码（纯只读 GET 会被降级矩阵跳过）
       const userLog = async (resOrPromise, detail) => {
         const res = await resOrPromise;
-        await recordLog(env, { actor, action: classifyAction(request.method, path), target: account || '', method: request.method, path, status: res.status, ok: res.status < 400, ip, detail: detail || '' });
+        await recordLog(env, { actor, action: classifyAction(request.method, path), target: account || '', method: request.method, path, status: res.status, ok: res.status < 400, ip, detail: detail || '' }, request);
         return res;
       };
 
@@ -2750,44 +2901,44 @@ async function apiRequest(request, env) {
       }
 
       if (path === '/api/account/device' && request.method === 'DELETE') {
-        return userLog(await handleAccountUnbindDevice(request, env, identity, origin));
+        return userLog(await handleAccountUnbindDevice(request, env, identity, origin), '解绑设备');
       }
 
       // 个人中心：修改昵称 / 密码 / 绑定手机号（均需已登录账号）
       if (path === '/api/account/profile' && request.method === 'POST') {
-        return userLog(await handleProfileUpdate(request, env, identity, origin));
+        return userLog(await handleProfileUpdate(request, env, identity, origin), '改昵称');
       }
       if (path === '/api/account/password' && request.method === 'POST') {
-        return userLog(await handlePasswordChange(request, env, identity, origin));
+        return userLog(await handlePasswordChange(request, env, identity, origin), '改密码');
       }
       if (path === '/api/account/phone' && request.method === 'POST') {
-        return userLog(await handlePhoneChange(request, env, identity, origin));
+        return userLog(await handlePhoneChange(request, env, identity, origin), '换手机号');
       }
 
       if (path === '/api/events') {
         if (request.method === 'GET') return userLog(handleEventsGet(env, account, origin));
-        if (request.method === 'POST') return userLog(await handleEventsCreate(request, env, account, origin));
+        if (request.method === 'POST') return userLog(await handleEventsCreate(request, env, account, origin), '新增活动');
       }
 
       if (path.startsWith('/api/events/')) {
         const eventId = decodeURIComponent(path.slice('/api/events/'.length));
         if (eventId) {
-          if (request.method === 'POST') return userLog(await handleEventUpdate(request, env, account, eventId, origin));
-          if (request.method === 'DELETE') return userLog(handleEventDelete(env, account, eventId, origin));
+          if (request.method === 'POST') return userLog(await handleEventUpdate(request, env, account, eventId, origin), '改活动 ' + eventId);
+          if (request.method === 'DELETE') return userLog(handleEventDelete(env, account, eventId, origin), '删活动 ' + eventId);
         }
       }
 
       if (path === '/api/gifts') {
         if (request.method === 'GET') return userLog(handleGiftsGet(request, env, account, origin));
-        if (request.method === 'POST') return userLog(await handleGiftsCreate(request, env, account, origin));
+        if (request.method === 'POST') return userLog(await handleGiftsCreate(request, env, account, origin), '新增礼金');
       }
 
       if (path.startsWith('/api/gifts/')) {
         const giftId = decodeURIComponent(path.slice('/api/gifts/'.length));
         if (giftId) {
           if (request.method === 'GET') return userLog(handleGiftGet(env, account, giftId, origin));
-          if (request.method === 'PUT') return userLog(await handleGiftsUpdate(request, env, account, giftId, origin));
-          if (request.method === 'DELETE') return userLog(handleGiftsDelete(env, account, giftId, origin));
+          if (request.method === 'PUT') return userLog(await handleGiftsUpdate(request, env, account, giftId, origin), '改礼金 ' + giftId);
+          if (request.method === 'DELETE') return userLog(handleGiftsDelete(env, account, giftId, origin), '删礼金 ' + giftId);
         }
       }
 
@@ -2806,31 +2957,31 @@ async function apiRequest(request, env) {
 
       if (path === '/api/ai/config') {
         if (request.method === 'GET') return userLog(handleAiConfigGet(env, account, origin));
-        if (request.method === 'POST') return userLog(await handleAiConfigSave(request, env, account, origin));
+        if (request.method === 'POST') return userLog(await handleAiConfigSave(request, env, account, origin), '保存 AI 配置');
       }
       if (path === '/api/ai/parse' && request.method === 'POST') {
-        return userLog(await handleAiParse(request, env, account, origin));
+        return userLog(await handleAiParse(request, env, account, origin), 'AI 解析');
       }
 
       if (path === '/api/apikey' && request.method === 'GET') {
         return userLog(handleApiKeyGet(env, account, origin));
       }
       if (path === '/api/apikey/rotate' && request.method === 'POST') {
-        return userLog(await handleApiKeyRotate(env, account, origin));
+        return userLog(await handleApiKeyRotate(env, account, origin), '重新生成密钥');
       }
       if (path === '/api/apikey/port' && request.method === 'POST') {
-        return userLog(await handleApiKeyPort(request, env, account, origin));
+        return userLog(await handleApiKeyPort(request, env, account, origin), '改密钥端口');
       }
 
       if (path === '/api/feedback' && request.method === 'POST') {
-        return userLog(await handleFeedback(request, env, account, origin));
+        return userLog(await handleFeedback(request, env, account, origin), '意见反馈');
       }
 
       if (path === '/api/export/backup' && request.method === 'GET') {
-        return userLog(handleExportBackup(env, account, origin));
+        return userLog(handleExportBackup(env, account, origin), '导出备份');
       }
       if (path === '/api/import/backup' && request.method === 'POST') {
-        return userLog(await handleImportBackup(request, env, account, origin));
+        return userLog(await handleImportBackup(request, env, account, origin), '导入备份');
       }
 
       if (path === '/api/membership' && request.method === 'GET') {
@@ -2846,7 +2997,7 @@ async function apiRequest(request, env) {
       }
 
       const nfRes = fail('接口不存在', 404, origin);
-      await recordLog(env, { actor, action: classifyAction(request.method, path), target: account || '', method: request.method, path, status: 404, ok: false, ip, detail: '接口不存在' });
+      await recordLog(env, { actor, action: classifyAction(request.method, path), target: account || '', method: request.method, path, status: 404, ok: false, ip, detail: '接口不存在 ' + path }, request);
       return nfRes;
     } catch (e) {
       // 让错误冒到外层 fetch：缺表(1101)时由外层自动 ensureSchema 并重试一次
