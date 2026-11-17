@@ -693,6 +693,100 @@ async function handleAccountUnbindDevice(request, env, identity, origin) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 个人中心：修改昵称 / 密码 / 绑定手机号                               */
+/* ------------------------------------------------------------------ */
+
+/** 仅登录账号（手机号+密码体系）可改个人信息；游客无账号可改。 */
+function requirePhoneAccount(identity, origin) {
+  if (!identity.isPhone) return { error: fail('请先登录账号后再操作', 401, origin) };
+  return { phone: accountPhone(identity.account) };
+}
+
+/** 发新 JWT（token 内含 phone/name，改完信息后必须换发）。 */
+async function reissueToken(env, phone, name) {
+  const now = Math.floor(Date.now() / 1000);
+  return jwtSign({ phone, name, iat: now, exp: now + JWT_TTL_SECONDS }, jwtSecret(env));
+}
+
+/** 改昵称 */
+async function handleProfileUpdate(request, env, identity, origin) {
+  const guard = requirePhoneAccount(identity, origin);
+  if (guard.error) return guard.error;
+  const body = await readJson(request);
+  if (!body) return fail('请求内容格式错误', 400, origin);
+  const name = asString(body.name, 32).trim() || '账本用户';
+  const phone = guard.phone;
+  await env.DB.prepare('UPDATE users SET name = ? WHERE phone = ?').bind(name, phone).run();
+  return jsonRes({ phone, name, token: await reissueToken(env, phone, name) }, 200, origin);
+}
+
+/** 改密码：验证当前密码 */
+async function handlePasswordChange(request, env, identity, origin) {
+  const guard = requirePhoneAccount(identity, origin);
+  if (guard.error) return guard.error;
+  const body = await readJson(request);
+  if (!body) return fail('请求内容格式错误', 400, origin);
+  const phone = guard.phone;
+  const oldPassword = asString(body.oldPassword, 64);
+  const newPassword = asString(body.newPassword, 64);
+  if (!validPassword(newPassword)) return fail('新密码需为 8-32 位', 400, origin);
+  const user = await env.DB.prepare('SELECT password_hash, name FROM users WHERE phone = ?')
+    .bind(phone)
+    .first();
+  if (!user) return fail('账号不存在', 404, origin);
+  const [salt, stored] = String(user.password_hash).split('|');
+  if ((await hashPassword(oldPassword, salt)) !== stored) return fail('当前密码不正确', 403, origin);
+  const newSalt = crypto.randomUUID();
+  const passwordHash = `${newSalt}|${await hashPassword(newPassword, newSalt)}`;
+  await env.DB.prepare('UPDATE users SET password_hash = ? WHERE phone = ?').bind(passwordHash, phone).run();
+  return jsonRes({ phone, changed: true }, 200, origin);
+}
+
+/** 改绑定手机号：验证密码 → 校验新号 → 原子迁移全部账号数据 → 换发 JWT。 */
+async function handlePhoneChange(request, env, identity, origin) {
+  const guard = requirePhoneAccount(identity, origin);
+  if (guard.error) return guard.error;
+  const body = await readJson(request);
+  if (!body) return fail('请求内容格式错误', 400, origin);
+  const phone = guard.phone;
+  const newPhone = asString(body.newPhone, 20).trim();
+  const password = asString(body.password, 64);
+  if (!validPhone(newPhone)) return fail('请输入正确的手机号', 400, origin);
+  if (newPhone === phone) return fail('新手机号不能与当前手机号相同', 400, origin);
+
+  const user = await env.DB.prepare('SELECT * FROM users WHERE phone = ?').bind(phone).first();
+  if (!user) return fail('账号不存在', 404, origin);
+  const [salt, stored] = String(user.password_hash).split('|');
+  if ((await hashPassword(password, salt)) !== stored) return fail('当前密码不正确', 403, origin);
+  const dup = await env.DB.prepare('SELECT 1 AS x FROM users WHERE phone = ?').bind(newPhone).first();
+  if (dup) return fail('该手机号已被注册', 409, origin);
+
+  const oldAccount = `user:${phone}`;
+  const newAccount = `user:${newPhone}`;
+  // 全部迁移在一个 batch 内原子执行：任一步失败则整体回滚，不会出现半迁移状态。
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO users (phone, name, password_hash, created_at) VALUES (?, ?, ?, ?)')
+      .bind(newPhone, user.name, user.password_hash, user.created_at),
+    env.DB.prepare('DELETE FROM users WHERE phone = ?').bind(phone),
+    env.DB.prepare('UPDATE events SET account = ? WHERE account = ?').bind(newAccount, oldAccount),
+    env.DB.prepare('UPDATE gifts SET account = ? WHERE account = ?').bind(newAccount, oldAccount),
+    env.DB.prepare(
+      `INSERT OR REPLACE INTO account_settings (account, ai_base_url, ai_api_key, ai_model)
+       SELECT ?, ai_base_url, ai_api_key, ai_model FROM account_settings WHERE account = ?`
+    ).bind(newAccount, oldAccount),
+    env.DB.prepare('DELETE FROM account_settings WHERE account = ?').bind(oldAccount),
+    env.DB.prepare('UPDATE account_keys SET phone = ? WHERE phone = ?').bind(newPhone, phone),
+    env.DB.prepare('UPDATE device_bindings SET phone = ? WHERE phone = ?').bind(newPhone, phone),
+    env.DB.prepare('UPDATE feedback SET account = ? WHERE account = ?').bind(newAccount, oldAccount),
+  ]);
+  return jsonRes(
+    { phone: newPhone, name: user.name, changed: true, token: await reissueToken(env, newPhone, user.name) },
+    200,
+    origin
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* 会话                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -727,6 +821,9 @@ async function handleSession(env, identity, origin) {
       },
       // 网页版由自建 Worker 提供完整功能，直接视为已开通永久版。
       membership: { lifetime: true, priceFen: 1990 },
+      // 前端设置页「云端服务：已连接（gateway.username）」——登录账号显示完整手机号，
+      // 便于用户确认当前数据归属哪个账号；游客不显示。
+      gatewayPhone: loggedIn ? phone : null,
       auth,
     },
     200,
@@ -2078,6 +2175,17 @@ async function apiRequest(request, env) {
 
       if (path === '/api/account/device' && request.method === 'DELETE') {
         return handleAccountUnbindDevice(request, env, identity, origin);
+      }
+
+      // 个人中心：修改昵称 / 密码 / 绑定手机号（均需已登录账号）
+      if (path === '/api/account/profile' && request.method === 'POST') {
+        return handleProfileUpdate(request, env, identity, origin);
+      }
+      if (path === '/api/account/password' && request.method === 'POST') {
+        return handlePasswordChange(request, env, identity, origin);
+      }
+      if (path === '/api/account/phone' && request.method === 'POST') {
+        return handlePhoneChange(request, env, identity, origin);
       }
 
       if (path === '/api/events') {

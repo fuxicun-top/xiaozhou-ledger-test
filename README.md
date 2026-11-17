@@ -214,6 +214,9 @@ npx wrangler d1 execute xiaozhou-ledger-web --remote --file=fix-account-keys.sql
 | POST | `/api/account/login` | 手机号 + 密码登录，发 7 天 JWT |
 | GET | `/api/account/check?phone=` | 查询手机号是否已注册 |
 | DELETE | `/api/account/device` | 解除本机设备绑定（重新要求登录） |
+| POST | `/api/account/profile` | 修改昵称（`name`；需登录，换发 JWT） |
+| POST | `/api/account/password` | 修改密码（`oldPassword`/`newPassword`；需登录+验证当前密码） |
+| POST | `/api/account/phone` | 更换绑定手机号（`newPhone`/`password`；需登录+验证当前密码，账本数据原子迁移，换发 JWT） |
 | POST | `/api/admin/reset-password` | 管理员重置密码（需 `X-Admin-Key` 匹配 `ADMIN_KEY`） |
 | POST | `/api/admin/purge-account` | 管理员清空账号及其全部数据（需 `X-Admin-Key`） |
 | GET | `/api/session` | 会话信息（`auth.loggedIn/guest`） |

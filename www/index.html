@@ -244,7 +244,32 @@
             ".lg-msg{font-size:12px;margin-top:10px;min-height:16px;line-height:1.5}" +
             ".lg-msg.err{color:#c0392b}.lg-msg.ok{color:#2e7d32}.lg-msg.warn{color:#9a7b00}" +
             ".lg-links{display:flex;justify-content:space-between;margin-top:10px;font-size:12px;color:#8a8178}" +
-            ".lg-links a{color:#8c6d4f;text-decoration:none;cursor:pointer}";
+            ".lg-links a{color:#8c6d4f;text-decoration:none;cursor:pointer}" +
+            /* 头像下拉菜单 */
+            ".acct-menu{position:fixed;z-index:10000;min-width:148px;background:#fff;border:1px solid #ebe4da;border-radius:12px;box-shadow:0 10px 34px rgba(0,0,0,.16);padding:6px;font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif}" +
+            ".acct-menu-item{padding:10px 12px;border-radius:8px;font-size:13px;color:#3a342e;cursor:pointer;user-select:none}" +
+            ".acct-menu-item:hover{background:#f6f1ea}" +
+            ".acct-menu-item.danger{color:#c0392b}" +
+            ".acct-menu-sep{height:1px;background:#f0eae2;margin:4px 2px}" +
+            ".acct-menu-head{padding:8px 12px 6px;font-size:12px;color:#9a9188}" +
+            /* 个人中心面板 */
+            ".pf-overlay{position:fixed;inset:0;background:rgba(28,24,20,.55);backdrop-filter:blur(2px);z-index:9998;display:flex;align-items:center;justify-content:center;padding:16px}" +
+            ".pf-card{background:#fff;width:100%;max-width:420px;max-height:90vh;overflow:auto;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.18);padding:22px;font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;color:#2b2622;font-size:14px}" +
+            ".pf-card h2{margin:0 0 2px;font-size:18px;font-weight:600}" +
+            ".pf-sub{color:#8a8178;font-size:12px;margin:0 0 14px}" +
+            ".pf-group{border-top:1px solid #f0eae2;padding-top:12px;margin-top:12px}" +
+            ".pf-group h3{margin:0 0 8px;font-size:13px;color:#8c6d4f;font-weight:600}" +
+            ".pf-field{margin-bottom:8px}" +
+            ".pf-field label{display:block;font-size:12px;color:#8a8178;margin-bottom:4px}" +
+            ".pf-field input{width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid #e5ddd3;border-radius:9px;font-size:14px;outline:none}" +
+            ".pf-field input:focus{border-color:#c9a86a}" +
+            ".pf-btn{padding:8px 16px;background:#8c6d4f;color:#fff;border:none;border-radius:9px;font-size:13px;cursor:pointer}" +
+            ".pf-btn:disabled{opacity:.6;cursor:default}" +
+            ".pf-btn.ghost{background:#f3efe9;color:#6b625a}" +
+            ".pf-btn.danger{background:#c0392b}" +
+            ".pf-msg{font-size:12px;margin-top:8px;min-height:16px}" +
+            ".pf-msg.err{color:#c0392b}.pf-msg.ok{color:#2e7d32}" +
+            ".pf-close{float:right;cursor:pointer;color:#a89e94;font-size:20px;line-height:1;user-select:none}";
           document.head.appendChild(style);
 
           var overlay = document.createElement("div");
@@ -267,7 +292,46 @@
             "</div>";
           document.body.appendChild(overlay);
 
+          /* ---------- 个人中心面板 ---------- */
+          var pfOverlay = document.createElement("div");
+          pfOverlay.className = "pf-overlay";
+          pfOverlay.style.display = "none";
+          pfOverlay.innerHTML =
+            '<div class="pf-card">' +
+            '<span class="pf-close" id="pf-close">×</span>' +
+            '<h2>个人中心</h2>' +
+            '<p class="pf-sub" id="pf-account">当前账号：—</p>' +
+            '<div class="pf-group"><h3>修改昵称</h3>' +
+            '<div class="pf-field"><label>昵称（显示在账本里的名字）</label><input id="pf-name" maxlength="32" placeholder="昵称"></div>' +
+            '<button class="pf-btn" id="pf-name-save">保存昵称</button></div>' +
+            '<div class="pf-group"><h3>修改密码</h3>' +
+            '<div class="pf-field"><label>当前密码</label><input id="pf-old-pwd" type="password" maxlength="32" placeholder="当前密码"></div>' +
+            '<div class="pf-field"><label>新密码（8-32 位）</label><input id="pf-new-pwd" type="password" maxlength="32" placeholder="新密码"></div>' +
+            '<button class="pf-btn" id="pf-pwd-save">修改密码</button></div>' +
+            '<div class="pf-group"><h3>更换绑定手机号</h3>' +
+            '<p class="pf-sub" style="margin:0 0 8px">账本数据会一并迁移到新手机号，需验证当前密码。</p>' +
+            '<div class="pf-field"><label>新手机号</label><input id="pf-new-phone" inputmode="numeric" maxlength="20" placeholder="新手机号"></div>' +
+            '<div class="pf-field"><label>当前密码</label><input id="pf-phone-pwd" type="password" maxlength="32" placeholder="当前密码"></div>' +
+            '<button class="pf-btn" id="pf-phone-save">更换手机号</button></div>' +
+            '<div class="pf-group" style="text-align:center">' +
+            '<button class="pf-btn ghost" id="pf-logout">退出登录</button></div>' +
+            '<div class="pf-msg" id="pf-msg"></div>' +
+            "</div>";
+          document.body.appendChild(pfOverlay);
+
+          /* ---------- 头像下拉菜单 ---------- */
+          var acctMenu = document.createElement("div");
+          acctMenu.className = "acct-menu";
+          acctMenu.style.display = "none";
+          acctMenu.innerHTML =
+            '<div class="acct-menu-head" id="acct-head">账号</div>' +
+            '<div class="acct-menu-item" id="acct-profile">个人中心</div>' +
+            '<div class="acct-menu-sep"></div>' +
+            '<div class="acct-menu-item danger" id="acct-logout">退出账号</div>';
+          document.body.appendChild(acctMenu);
+
           var $ = function (id) { return overlay.querySelector(id); };
+          var $$ = function (id) { return pfOverlay.querySelector(id); };
           var mode = "login";
 
           function msg(text, cls) {
@@ -390,14 +454,111 @@
               });
           };
 
-          // Web 部署说明：在设置页「账户」面板注入「绑定手机号 / 账号管理」入口。
-          // 说明：设置页的「运行模式/云端服务/接口密钥」等文案已在前端构建产物中
-          // 静态修正（www/assets/index-*.js），并由 /api/session 返回 mode:'gateway'
-          // 驱动面板原生渲染，此处不再做运行时文案修补，只保留功能性按钮注入。
-          injectLedgerPanel(openAccountPanel);
+          /* ---------------------------------------------------------------- */
+          /* 个人中心：昵称 / 密码 / 手机号                                     */
+          /* ---------------------------------------------------------------- */
+          function pfMsg(text, cls) {
+            var m = $$("#pf-msg");
+            m.textContent = text || "";
+            m.className = "pf-msg" + (cls ? " " + cls : "");
+          }
+
+          function openProfilePanel() {
+            acctMenu.style.display = "none";
+            if (!getAuthJwt()) return openAccountPanel();
+            var phone = ls().getItem("ledger_phone") || "";
+            var name = ls().getItem("ledger_name") || "";
+            $$("#pf-account").textContent = "当前账号：" + (phone || "—");
+            $$("#pf-name").value = name;
+            $$("#pf-old-pwd").value = "";
+            $$("#pf-new-pwd").value = "";
+            $$("#pf-new-phone").value = "";
+            $$("#pf-phone-pwd").value = "";
+            pfMsg("");
+            pfOverlay.style.display = "flex";
+          }
+
+          $("#pf-close").onclick = function () { pfOverlay.style.display = "none"; };
+          pfOverlay.addEventListener("click", function (ev) {
+            if (ev.target === pfOverlay) pfOverlay.style.display = "none";
+          });
+
+          // 保存新 token + 登录信息后刷新（改手机号/昵称都会换发 JWT）
+          function applyNewAccount(d, fallbackName) {
+            saveLogin(d.phone, d.name || fallbackName || "", d.token);
+            pfMsg("已保存，正在刷新…", "ok");
+            setTimeout(function () { location.reload(); }, 400);
+          }
+
+          $$("#pf-name-save").onclick = function () {
+            var name = $$("#pf-name").value.trim();
+            if (!name) return pfMsg("昵称不能为空", "err");
+            var btn = this; btn.disabled = true;
+            apiCall("/api/account/profile", "POST", { name: name })
+              .then(function (d) { applyNewAccount(d, name); })
+              .catch(function (e) { pfMsg(e.message, "err"); btn.disabled = false; });
+          };
+
+          $$("#pf-pwd-save").onclick = function () {
+            var oldPassword = $$("#pf-old-pwd").value;
+            var newPassword = $$("#pf-new-pwd").value;
+            if (!oldPassword) return pfMsg("请输入当前密码", "err");
+            if (!newPassword || newPassword.length < 8 || newPassword.length > 32) {
+              return pfMsg("新密码需为 8-32 位", "err");
+            }
+            var btn = this; btn.disabled = true;
+            apiCall("/api/account/password", "POST", { oldPassword: oldPassword, newPassword: newPassword })
+              .then(function () { pfMsg("密码已修改，请用新密码登录", "ok"); $$("#pf-old-pwd").value = ""; $$("#pf-new-pwd").value = ""; btn.disabled = false; })
+              .catch(function (e) { pfMsg(e.message, "err"); btn.disabled = false; });
+          };
+
+          $$("#pf-phone-save").onclick = function () {
+            var newPhone = $$("#pf-new-phone").value.trim();
+            var password = $$("#pf-phone-pwd").value;
+            if (!/^\d{5,20}$/.test(newPhone)) return pfMsg("请输入正确的手机号", "err");
+            if (!password) return pfMsg("请输入当前密码", "err");
+            var btn = this; btn.disabled = true;
+            apiCall("/api/account/phone", "POST", { newPhone: newPhone, password: password })
+              .then(function (d) { applyNewAccount(d, d.name); })
+              .catch(function (e) { pfMsg(e.message, "err"); btn.disabled = false; });
+          };
+
+          function doLogout() {
+            clearLogin();
+            location.reload();
+          }
+          $$("#pf-logout").onclick = doLogout;
+          document.getElementById("acct-logout").onclick = doLogout;
+          document.getElementById("acct-profile").onclick = openProfilePanel;
+
+          // 头像下拉：定位到头像下方
+          function openAcctMenu(anchor) {
+            if (!getAuthJwt()) return openAccountPanel();
+            var phone = ls().getItem("ledger_phone") || "";
+            document.getElementById("acct-head").textContent = "已登录：" + (phone || "账号");
+            var r = anchor.getBoundingClientRect();
+            acctMenu.style.display = "block";
+            var w = 160, h = acctMenu.offsetHeight || 110;
+            var left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8));
+            var top = r.bottom + 6;
+            if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 6);
+            acctMenu.style.left = left + "px";
+            acctMenu.style.top = top + "px";
+          }
+          document.addEventListener("click", function (ev) {
+            if (acctMenu.style.display === "block" &&
+                !acctMenu.contains(ev.target) &&
+                !ev.target.closest(".avatar.small")) {
+              acctMenu.style.display = "none";
+            }
+          });
+
+          // Web 部署：注入设置页账号入口 + 右上角头像菜单。
+          // 运行模式/云端服务文案已由构建产物结合 /api/session 原生渲染。
+          injectLedgerPanel(openAccountPanel, openProfilePanel, openAcctMenu, doLogout);
         }
 
-        function injectLedgerPanel(openPanel) {
+        function injectLedgerPanel(openPanel, openProfile, openAcctMenu, doLogout) {
           function textOf(el) {
             return el ? (el.textContent || "").trim() : "";
           }
@@ -416,36 +577,56 @@
             return null;
           }
 
-          // 把「绑定手机号 / 账号管理」按钮挂进「账户」面板。
-          // React 每次重渲染都会重建 section DOM，注入的按钮会被顶掉——
-          // 这里是幂等的：按钮在、文案没变就不动；被顶掉就立刻补回。
+          // 把账号按钮挂进「账户」面板：
+          //  未登录 → 「绑定手机号（登录 / 注册）」点开登录注册框；
+          //  已登录 → 「个人中心 / 退出账号」点开个人中心（不再弹登录框）。
+          // React 每次重渲染都会重建 section DOM，注入的按钮会被顶掉——幂等补回。
           function mountButton() {
             var sec = findAccountSec();
             if (!sec) return;
+            var logged = isLogged();
+            var label = logged ? "个人中心 / 退出账号" : "绑定手机号（登录 / 注册）";
             var btn = document.getElementById("__bindPhone");
-            var label = isLogged() ? "账号管理（切换 / 退出）" : "绑定手机号（登录 / 注册）";
             if (btn && btn.parentNode === sec && btn.textContent === label) return;
             if (!btn) {
               btn = document.createElement("button");
               btn.id = "__bindPhone";
               btn.className = "button";
               btn.style.cssText = "width:100%;margin-top:10px;justify-content:center;height:38px;font-size:13px";
-              btn.onclick = openPanel;
             }
+            btn.onclick = logged ? openProfile : openPanel;
             btn.textContent = label;
             sec.appendChild(btn);
           }
 
-          // 常驻挂载：React 重渲染（路由切换等）会重建设置页 DOM，
-          // 每次 DOM 变化都幂等检查一遍；不在设置页时查不到目标元素，开销可忽略。
-          var mo = new MutationObserver(mountButton);
+          // 右上角头像（.avatar.small）：未登录点开登录注册，已登录点开账号下拉菜单。
+          // 用事件委托 + 标记，避免 React 重重建 DOM 导致监听器丢失。
+          function bindAvatar() {
+            var avatars = document.querySelectorAll(".topbar .avatar.small");
+            for (var i = 0; i < avatars.length; i++) {
+              (function (el) {
+                if (el.__ledgerBound) return;
+                el.__ledgerBound = true;
+                el.style.cursor = "pointer";
+                el.title = isLogged() ? "账号菜单" : "登录 / 注册";
+                el.addEventListener("click", function (ev) {
+                  ev.stopPropagation();
+                  if (isLogged()) openAcctMenu(el);
+                  else openPanel();
+                });
+              })(avatars[i]);
+            }
+          }
+
+          // 常驻挂载：React 重渲染（路由切换等）会重建 DOM，幂等检查补回。
+          function refresh() { mountButton(); bindAvatar(); }
+          var mo = new MutationObserver(refresh);
           var appRoot = document.getElementById("root") || document.body;
           mo.observe(appRoot, { childList: true, subtree: true });
 
           var start = function () {
-            mountButton();
-            // 定时兜底（防 observer 漏报或首渲染竞态；幂等检查）
-            setInterval(mountButton, 1500);
+            refresh();
+            setInterval(refresh, 1500);
           };
 
           if (document.readyState === "loading") {
