@@ -10,8 +10,6 @@
  * 说明：DDL 均为幂等，重复执行无副作用；旧库的列迁移逐条 try/catch 跳过已存在列。
  */
 
-export const SCHEMA_VERSION = 2;
-
 // 全新/旧库通用的全部表与索引（与 schema.sql 一致）
 const DDL = [
   `CREATE TABLE IF NOT EXISTS accounts (

@@ -346,15 +346,6 @@ async function ensureIdentity(env, identity) {
   }
 }
 
-function requireIdentity(identity) {
-  if (!identity.account) {
-    return {
-      error: fail('未登录或接口密钥无效', 401),
-    };
-  }
-  return { identity };
-}
-
 /** 数据作用域：按 account 查；游客账号为 dev:<deviceId>。 */
 function accOf(identity) {
   return identity.account;
@@ -657,7 +648,23 @@ async function handleAdminResetPassword(request, env, origin) {
   return jsonRes({ phone, reset: true }, 200, origin);
 }
 
-// 清空账号：删除用户及名下全部数据（user: 新账号 + phone: 旧 PIN 账号）
+/** 删除某手机号名下的全部账号数据（user: 新体系 + phone: 旧 PIN 体系）。
+ *  供命令行清账号与管理后台删用户共用，避免两处逻辑漂移。 */
+async function purgeAccountData(env, phone) {
+  for (const account of [`user:${phone}`, `phone:${phone}`]) {
+    await env.DB.prepare('DELETE FROM events WHERE account = ?').bind(account).run();
+    await env.DB.prepare('DELETE FROM gifts WHERE account = ?').bind(account).run();
+    await env.DB.prepare('DELETE FROM account_settings WHERE account = ?').bind(account).run();
+  }
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM account_keys WHERE phone = ?').bind(phone),
+    env.DB.prepare('DELETE FROM device_bindings WHERE phone = ?').bind(phone),
+    env.DB.prepare('DELETE FROM users WHERE phone = ?').bind(phone),
+    env.DB.prepare('DELETE FROM accounts WHERE phone = ?').bind(phone),
+  ]);
+}
+
+// 清空账号：删除用户及名下全部数据（命令行接口）
 async function handleAdminPurge(request, env, origin) {
   const body = await readJson(request);
   if (!body) return fail('请求内容格式错误', 400, origin);
@@ -667,15 +674,7 @@ async function handleAdminPurge(request, env, origin) {
   }
   const phone = asString(body.phone, 20).trim();
   if (!validPhone(phone)) return fail('请输入正确的手机号', 400, origin);
-  for (const account of [`user:${phone}`, `phone:${phone}`]) {
-    await env.DB.prepare('DELETE FROM events WHERE account = ?').bind(account).run();
-    await env.DB.prepare('DELETE FROM gifts WHERE account = ?').bind(account).run();
-    await env.DB.prepare('DELETE FROM account_settings WHERE account = ?').bind(account).run();
-  }
-  await env.DB.prepare('DELETE FROM account_keys WHERE phone = ?').bind(phone).run();
-  await env.DB.prepare('DELETE FROM device_bindings WHERE phone = ?').bind(phone).run();
-  await env.DB.prepare('DELETE FROM users WHERE phone = ?').bind(phone).run();
-  await env.DB.prepare('DELETE FROM accounts WHERE phone = ?').bind(phone).run();
+  await purgeAccountData(env, phone);
   return jsonRes({ phone, purged: true }, 200, origin);
 }
 
@@ -786,23 +785,13 @@ async function handleAdminUserUpdate(request, env, origin) {
   return jsonRes({ phone, name, updated: true }, 200, origin);
 }
 
-/** 管理员删除用户及其名下全部数据（复用现有清空逻辑）。 */
+/** 管理员删除用户及其名下全部数据（管理后台接口）。 */
 async function handleAdminUserDelete(request, env, origin) {
   const body = await readJson(request);
   if (!body) return fail('请求内容格式错误', 400, origin);
   const phone = asString(body.phone, 20).trim();
   if (!validPhone(phone)) return fail('请输入正确的手机号', 400, origin);
-  for (const account of [`user:${phone}`, `phone:${phone}`]) {
-    await env.DB.prepare('DELETE FROM events WHERE account = ?').bind(account).run();
-    await env.DB.prepare('DELETE FROM gifts WHERE account = ?').bind(account).run();
-    await env.DB.prepare('DELETE FROM account_settings WHERE account = ?').bind(account).run();
-  }
-  await env.DB.batch([
-    env.DB.prepare('DELETE FROM account_keys WHERE phone = ?').bind(phone),
-    env.DB.prepare('DELETE FROM device_bindings WHERE phone = ?').bind(phone),
-    env.DB.prepare('DELETE FROM users WHERE phone = ?').bind(phone),
-    env.DB.prepare('DELETE FROM accounts WHERE phone = ?').bind(phone),
-  ]);
+  await purgeAccountData(env, phone);
   return jsonRes({ phone, deleted: true }, 200, origin);
 }
 
@@ -2308,6 +2297,15 @@ async function apiRequest(request, env) {
       if (path === '/api/admin/login' && request.method === 'POST') {
         return handleAdminLogin(request, env, origin);
       }
+      // 命令行管理接口：用 X-Admin-Key 鉴权，必须放在下面 X-Admin-Token 拦截之前
+      if (path === '/api/admin/reset-password' && request.method === 'POST') {
+        return handleAdminResetPassword(request, env, origin);
+      }
+      if (path === '/api/admin/purge-account' && request.method === 'POST') {
+        return handleAdminPurge(request, env, origin);
+      }
+
+      // 网页管理后台接口：统一用 X-Admin-Token 鉴权
       if (path.startsWith('/api/admin/')) {
         if (!(await verifyAdminToken(request, env))) {
           return fail('管理员身份无效或已过期，请重新登录', 401, origin);
@@ -2330,14 +2328,6 @@ async function apiRequest(request, env) {
         if (path === '/api/admin/import-all' && request.method === 'POST') {
           return handleAdminImportAll(request, env, origin);
         }
-      }
-
-      // 忘记 PIN/密码：管理员重置（新体系密码）/ 清空账号（需 X-Admin-Key 与 env.ADMIN_KEY 匹配）
-      if (path === '/api/admin/reset-password' && request.method === 'POST') {
-        return handleAdminResetPassword(request, env, origin);
-      }
-      if (path === '/api/admin/purge-account' && request.method === 'POST') {
-        return handleAdminPurge(request, env, origin);
       }
 
       const identity = await resolveIdentity(request, env);

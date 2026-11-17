@@ -412,11 +412,8 @@
             }
           });
 
-          // 退出登录：清除本地 JWT（服务端账号数据不受影响，重新登录即可恢复）
-          $("#lg-unbind").onclick = function () {
-            clearLogin();
-            location.reload();
-          };
+          // 退出登录（doLogout 为函数声明，已提升，此处可直接引用）
+          $("#lg-unbind").onclick = doLogout;
 
           $("#lg-guest").onclick = function () {
             overlay.style.display = "none";
