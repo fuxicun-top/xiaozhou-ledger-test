@@ -83,8 +83,20 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+/* 业务日期按东八区（+08:00）计算：凌晨 0-8 点 UTC 仍是中国的"今天"，
+ * 直接用 UTC 会让 AI 解析默认日期、年度统计的"今年"差一天/差一年。 */
+const CN_TZ_OFFSET_MIN = 8 * 60;
+
+function cnDate() {
+  return new Date(Date.now() + CN_TZ_OFFSET_MIN * 60000).toISOString();
+}
+
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return cnDate().slice(0, 10);
+}
+
+function thisYear() {
+  return cnDate().slice(0, 4);
 }
 
 function asString(value, max = 500) {
@@ -122,6 +134,11 @@ function getApiKeyHeader(request) {
 function maskPhone(phone) {
   if (!phone || phone.length < 7) return phone || '';
   return `${phone.slice(0, 3)}****${phone.slice(-4)}`;
+}
+
+/** D1/SQLite 唯一约束冲突（用于并发竞态兜底：SELECT-then-INSERT 窗口内撞唯一索引）。 */
+function isUniqueError(e) {
+  return Boolean(e && /unique constraint failed/i.test(String(e.message || '')));
 }
 
 /* ------------------------------------------------------------------ */
@@ -210,8 +227,16 @@ async function hmacSha256Raw(keyText, message) {
 }
 
 /** 取 Worker 的 JWT 密钥：Secret JWT_SECRET 优先，未设置时回退到内置默认值（部署者可在控制台设置自己的）。 */
+let jwtSecretWarned = false;
 function jwtSecret(env) {
-  return env.JWT_SECRET || 'xiaozhou-ledger-web-default-jwt-secret';
+  if (env.JWT_SECRET) return env.JWT_SECRET;
+  if (!jwtSecretWarned) {
+    jwtSecretWarned = true;
+    console.warn(
+      '[security] JWT_SECRET 未设置，正在使用内置默认密钥，公网部署存在 token 伪造风险；请执行 wrangler secret put JWT_SECRET'
+    );
+  }
+  return 'xiaozhou-ledger-web-default-jwt-secret';
 }
 
 const JWT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 天
@@ -338,7 +363,10 @@ function accOf(identity) {
 /** 账号手机号：user:<phone>（新体系）或 phone:<phone>（旧 PIN 体系遗留数据）。 */
 function accountPhone(account) {
   if (!account) return null;
-  if (account.startsWith('user:') || account.startsWith('phone:')) return account.slice(5 + 1);
+  // 注意前缀长度：'user:' 为 5，'phone:' 为 6，必须分别取值，
+  // 否则 user: 账号的手机号会被截断首位（历史 P0 缺陷）。
+  if (account.startsWith('user:')) return account.slice(5);
+  if (account.startsWith('phone:')) return account.slice(6);
   return null;
 }
 
@@ -475,9 +503,15 @@ async function handleAccountRegister(request, env, identity, origin) {
 
   const salt = crypto.randomUUID();
   const passwordHash = `${salt}|${await hashPassword(password, salt)}`;
-  await env.DB.prepare('INSERT INTO users (phone, name, password_hash, created_at) VALUES (?, ?, ?, ?)')
-    .bind(phone, name, passwordHash, nowIso())
-    .run();
+  try {
+    await env.DB.prepare('INSERT INTO users (phone, name, password_hash, created_at) VALUES (?, ?, ?, ?)')
+      .bind(phone, name, passwordHash, nowIso())
+      .run();
+  } catch (e) {
+    // 并发竞态：两个请求同时通过"该手机号已注册"检查，撞 users 主键。
+    if (isUniqueError(e)) return fail('该手机号已注册，请直接登录', 409, origin);
+    throw e;
+  }
   await env.DB.prepare('INSERT OR IGNORE INTO account_settings (account) VALUES (?)')
     .bind(userAccount)
     .run();
@@ -523,9 +557,13 @@ async function handleAccountRegister(request, env, identity, origin) {
   }
 
   // 旧 PIN 账号（accounts 表）数据已并入，停用旧体系：删除 PIN 账号与其设备绑定，
-  // 之后该手机号只能走新体系（user: 账号 + JWT）
-  await env.DB.prepare('DELETE FROM device_bindings WHERE phone = ?').bind(phone).run();
-  await env.DB.prepare('DELETE FROM accounts WHERE phone = ?').bind(phone).run();
+  // 之后该手机号只能走新体系（user: 账号 + JWT）。
+  // 注意：仅在"并入数据"时才停用旧 PIN 账号——用户选了 importDevice:false（明确不并入）
+  // 时保留 phone: 数据的可访问性，否则数据会变成谁也访问不到的孤儿。
+  if (body.importDevice !== false) {
+    await env.DB.prepare('DELETE FROM device_bindings WHERE phone = ?').bind(phone).run();
+    await env.DB.prepare('DELETE FROM accounts WHERE phone = ?').bind(phone).run();
+  }
 
   const now = Math.floor(Date.now() / 1000);
   const token = await jwtSign(
@@ -672,15 +710,20 @@ async function handleSession(env, identity, origin) {
     auth = { loggedIn: true, phone: account.slice(6), guest: false };
   }
 
+  const loggedIn = isPhone || Boolean(account && account.startsWith('phone:'));
+
   return jsonRes(
     {
       username,
       uid: account ? account : `dev-${(identity.deviceId || '').slice(0, 8)}`,
-      mode: 'cloud',
+      // 前端设置页判断 mode==='gateway' 显示「云端网关」（其余显示「开发模式」），
+      // 本部署即云端服务，返回 gateway 让面板文案原生正确。
+      mode: 'gateway',
       gateway: {
         configured: true,
-        loggedIn: isPhone || Boolean(account && account.startsWith('phone:')),
-        error: isPhone || account ? '' : '未登录账号',
+        username: loggedIn ? username : undefined,
+        loggedIn,
+        error: loggedIn ? '' : '未登录账号（当前为游客模式）',
       },
       // 网页版由自建 Worker 提供完整功能，直接视为已开通永久版。
       membership: { lifetime: true, priceFen: 1990 },
@@ -734,12 +777,26 @@ async function handleEventsCreate(request, env, account, origin) {
     date,
     createdAt: nowIso(),
   };
-  await env.DB.prepare(
-    `INSERT INTO events (id, device_id, account, name, type, date, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(event.id, '', account, event.name, event.type, event.date, event.createdAt)
-    .run();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO events (id, device_id, account, name, type, date, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(event.id, '', account, event.name, event.type, event.date, event.createdAt)
+      .run();
+  } catch (e) {
+    // 并发竞态：两个请求同时通过上方"已存在"检查，撞 (account, type, date) 唯一索引。
+    // 回读已存在的那条返回，保持接口幂等语义（与上方 existing 分支一致）。
+    if (isUniqueError(e)) {
+      const raced = await env.DB.prepare(
+        `SELECT ${EVENT_COLUMNS} FROM events WHERE account = ? AND type = ? AND date = ? LIMIT 1`
+      )
+        .bind(account, type, date)
+        .first();
+      if (raced) return jsonRes(raced, 200, origin);
+    }
+    throw e;
+  }
   return jsonRes(event, 200, origin);
 }
 
@@ -772,13 +829,19 @@ async function handleEventUpdate(request, env, account, eventId, origin) {
 }
 
 async function handleEventDelete(env, account, eventId, origin) {
+  // 先确认活动存在（且属于本账号），再级联删除礼金：
+  // 否则活动不存在时礼金已被误删（历史顺序缺陷）。
+  const exists = await env.DB.prepare('SELECT 1 AS x FROM events WHERE id = ? AND account = ?')
+    .bind(eventId, account)
+    .first();
+  if (!exists) return fail('活动不存在', 404, origin);
+
   await env.DB.prepare('DELETE FROM gifts WHERE event_id = ? AND account = ?')
     .bind(eventId, account)
     .run();
-  const events = await env.DB.prepare('DELETE FROM events WHERE id = ? AND account = ?')
+  await env.DB.prepare('DELETE FROM events WHERE id = ? AND account = ?')
     .bind(eventId, account)
     .run();
-  if (!events.meta || events.meta.changes === 0) return fail('活动不存在', 404, origin);
   return jsonRes({ deleted: true }, 200, origin);
 }
 
@@ -1025,7 +1088,7 @@ async function loadAccountData(env, account) {
 
 async function handleOverview(env, account, origin) {
   const { events, gifts } = await loadAccountData(env, account);
-  const year = new Date().toISOString().slice(0, 4);
+  const year = thisYear();
 
   let totalInFen = 0;
   let totalOutFen = 0;
@@ -1075,7 +1138,7 @@ async function handlePeople(env, account, origin) {
 
 async function handleYearlyReport(request, env, account, origin) {
   const url = new URL(request.url);
-  const nowYear = String(new Date().getFullYear());
+  const nowYear = thisYear();
   const rawYear = url.searchParams.get('year') || '';
   const year = /^\d{4}$/.test(rawYear) ? rawYear : nowYear;
 
@@ -1680,6 +1743,14 @@ async function openPayload(env, doc) {
 }
 
 async function handleExportBackup(env, account, origin) {
+  // 未配置备份密钥时给出明确提示（此前会抛错被兜底成笼统 500）
+  if (!env.BACKUP_SECRET) {
+    return fail(
+      '服务端未配置备份密钥 BACKUP_SECRET，导出功能不可用；部署者请先执行 wrangler secret put BACKUP_SECRET',
+      400,
+      origin
+    );
+  }
   const { events, gifts } = await loadAccountData(env, account);
 
   // 全栈备份：连同该账号的 AI 配置与（明文）接口密钥一起导出，

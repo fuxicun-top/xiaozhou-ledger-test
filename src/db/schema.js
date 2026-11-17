@@ -117,10 +117,12 @@ const LEGACY_MIGRATIONS = [
 
 /**
  * 幂等地确保数据库结构完整。
- * D1 batch 原子执行全部建表/建索引；旧库列迁移用 exec 逐条尝试（已存在则跳过）。
+ * D1 的 batch() 只接受 D1PreparedStatement（本地 miniflare 对字符串数组直接抛
+ * ZodError），因此先把 DDL 全部 prepare 成语句对象再 batch，原子执行；
+ * 旧库列迁移用 exec 逐条尝试（已存在则跳过）。
  */
 export async function ensureSchema(db) {
-  await db.batch(DDL);
+  await db.batch(DDL.map((stmt) => db.prepare(stmt)));
   for (const stmt of LEGACY_MIGRATIONS) {
     try {
       await db.exec(stmt);

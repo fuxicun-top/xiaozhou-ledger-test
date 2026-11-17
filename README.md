@@ -15,6 +15,8 @@
 
 > 密码以加盐迭代哈希存于**你自己的** Cloudflare D1，服务端只存哈希。JWT 密钥默认内置，部署者建议设置 Secret `JWT_SECRET` 自定义（防止 token 伪造）。
 
+> **关于前端**：本项目前端沿用原「人情录」的编译产物（`www/assets/`），已针对云端部署做过静态文案修补（NAS/内网穿透文案改为 Cloudflare Worker + D1），并通过 `/api/session` 的 `mode:'gateway'` 让设置页面板原生显示正确的运行模式；`www/index.html` 中的运行时脚本只保留「登录/账号管理」入口注入。**上游原项目不公开前端源码**，因此请勿指望从上游反向构建；如自行重建前端，保持 `/api/*` 契约与 `window.fetch` 注入逻辑即可。
+
 ## 管理员密钥（必须设置）
 
 忘记密码的后台重置、清空账号接口需要管理员密钥，**部署时必设** `ADMIN_KEY`（任意长随机串）。设置后随时可用：
@@ -189,6 +191,17 @@ npx wrangler deploy
 ```
 
 验证同第 5 步：`curl https://你的地址/api/health`。
+
+### 从旧版本升级（接口密钥手机号截断修复）
+
+2026-11 之前的版本存在一个缺陷：`/api/apikey/rotate` 等接口把 `account_keys.phone` 写成了**缺首位的截断手机号**（如 `13800138000` → `3800138000`），导致小程序用接口密钥登录时映射到错误账号、看不到自己的数据。代码已修复；**老库需要执行一次数据修复**：
+
+```bash
+# 远程库执行（脚本幂等，先跑里面的 SELECT 人工核对，再跑 UPDATE）
+npx wrangler d1 execute xiaozhou-ledger-web --remote --file=fix-account-keys.sql
+```
+
+执行后用接口密钥调 `/api/session` 确认 `uid` 已是完整的 `user:<手机号>` 即可。
 
 ---
 
