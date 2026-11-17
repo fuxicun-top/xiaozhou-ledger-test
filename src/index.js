@@ -679,6 +679,213 @@ async function handleAdminPurge(request, env, origin) {
   return jsonRes({ phone, purged: true }, 200, origin);
 }
 
+/* ------------------------------------------------------------------ */
+/* 管理后台：ADMIN_KEY 登录 + 用户管理 + 全站备份还原                     */
+/*                                                                    */
+/* 管理员凭证来自 Cloudflare Secret：ADMIN_KEY（与命令行接口同一个）。     */
+/* 登录页输入该 key → 签发 role:'admin' 的 JWT（12 小时），               */
+/* 后续请求头 X-Admin-Token 携带，无需再记第二套账号密码。                */
+/* ------------------------------------------------------------------ */
+
+const ADMIN_TOKEN_TTL = 12 * 60 * 60; // 管理会话 12 小时
+
+function adminConfigured(env) {
+  return Boolean(env.ADMIN_KEY);
+}
+
+/** 校验 X-Admin-Token：必须是本服务签发、未过期、role='admin' 的 JWT。 */
+async function verifyAdminToken(request, env) {
+  const token = (request.headers.get('X-Admin-Token') || '').trim();
+  if (!token) return false;
+  const payload = await jwtVerify(token, jwtSecret(env));
+  return Boolean(payload && payload.role === 'admin');
+}
+
+/** 管理员登录：校验 ADMIN_KEY（与命令行接口同一把密钥），签发 admin JWT。 */
+async function handleAdminLogin(request, env, origin) {
+  if (!adminConfigured(env)) {
+    return fail('管理后台未启用：请先在 Cloudflare 配置 ADMIN_KEY 密钥', 503, origin);
+  }
+  const body = await readJson(request);
+  if (!body) return fail('请求内容格式错误', 400, origin);
+  // 兼容两种字段名：adminKey（新）、X-Admin-Key 头（老脚本习惯）
+  const supplied = (asString(body.adminKey, 256) || (request.headers.get('X-Admin-Key') || '').trim());
+  if (supplied !== env.ADMIN_KEY) {
+    return fail('管理员密钥不正确', 403, origin);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const token = await jwtSign(
+    { role: 'admin', iat: now, exp: now + ADMIN_TOKEN_TTL },
+    jwtSecret(env)
+  );
+  return jsonRes({ token, expiresIn: ADMIN_TOKEN_TTL }, 200, origin);
+}
+
+/** 用户列表：users + 每个账号的数据量统计 + 接口密钥状态。 */
+async function handleAdminUsers(env, origin) {
+  const { results } = await env.DB.prepare(
+    'SELECT phone, name, created_at FROM users ORDER BY created_at DESC'
+  ).all();
+  const users = results || [];
+  // 逐账号统计（个人站点量级小，顺序查询足够；避免大 JOIN 拖慢）
+  for (const u of users) {
+    const account = `user:${u.phone}`;
+    const [ev, gf, key] = await Promise.all([
+      env.DB.prepare('SELECT COUNT(*) AS n FROM events WHERE account = ?').bind(account).first(),
+      env.DB.prepare('SELECT COUNT(*) AS n FROM gifts WHERE account = ?').bind(account).first(),
+      env.DB.prepare('SELECT 1 AS x FROM account_keys WHERE phone = ? LIMIT 1').bind(u.phone).first(),
+    ]);
+    u.eventCount = (ev && Number(ev.n)) || 0;
+    u.giftCount = (gf && Number(gf.n)) || 0;
+    u.hasApiKey = Boolean(key);
+  }
+  return jsonRes({ users, total: users.length }, 200, origin);
+}
+
+/** 管理员新增用户（手机号+密码+昵称）。 */
+async function handleAdminUserCreate(request, env, origin) {
+  const body = await readJson(request);
+  if (!body) return fail('请求内容格式错误', 400, origin);
+  const phone = asString(body.phone, 20).trim();
+  const name = asString(body.name, 32).trim() || '账本用户';
+  const password = asString(body.password, 64);
+  if (!validPhone(phone)) return fail('请输入正确的手机号', 400, origin);
+  if (!validPassword(password)) return fail('密码需为 8-32 位', 400, origin);
+  if (await env.DB.prepare('SELECT 1 AS x FROM users WHERE phone = ?').bind(phone).first()) {
+    return fail('该手机号已存在', 409, origin);
+  }
+  const salt = crypto.randomUUID();
+  const hash = `${salt}|${await hashPassword(password, salt)}`;
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO users (phone, name, password_hash, created_at) VALUES (?, ?, ?, ?)')
+      .bind(phone, name, hash, nowIso()),
+    env.DB.prepare('INSERT OR IGNORE INTO account_settings (account) VALUES (?)').bind(`user:${phone}`),
+  ]);
+  return jsonRes({ phone, name, created: true }, 200, origin);
+}
+
+/** 管理员改用户信息：昵称 / 密码（均按传入字段可选）。 */
+async function handleAdminUserUpdate(request, env, origin) {
+  const body = await readJson(request);
+  if (!body) return fail('请求内容格式错误', 400, origin);
+  const phone = asString(body.phone, 20).trim();
+  if (!validPhone(phone)) return fail('请输入正确的手机号', 400, origin);
+  const user = await env.DB.prepare('SELECT * FROM users WHERE phone = ?').bind(phone).first();
+  if (!user) return fail('用户不存在', 404, origin);
+  const name = body.name !== undefined ? (asString(body.name, 32).trim() || '账本用户') : user.name;
+  let passwordHash = user.password_hash;
+  if (body.password !== undefined && body.password !== '') {
+    const password = asString(body.password, 64);
+    if (!validPassword(password)) return fail('密码需为 8-32 位', 400, origin);
+    const salt = crypto.randomUUID();
+    passwordHash = `${salt}|${await hashPassword(password, salt)}`;
+  }
+  await env.DB.prepare('UPDATE users SET name = ?, password_hash = ? WHERE phone = ?')
+    .bind(name, passwordHash, phone)
+    .run();
+  return jsonRes({ phone, name, updated: true }, 200, origin);
+}
+
+/** 管理员删除用户及其名下全部数据（复用现有清空逻辑）。 */
+async function handleAdminUserDelete(request, env, origin) {
+  const body = await readJson(request);
+  if (!body) return fail('请求内容格式错误', 400, origin);
+  const phone = asString(body.phone, 20).trim();
+  if (!validPhone(phone)) return fail('请输入正确的手机号', 400, origin);
+  for (const account of [`user:${phone}`, `phone:${phone}`]) {
+    await env.DB.prepare('DELETE FROM events WHERE account = ?').bind(account).run();
+    await env.DB.prepare('DELETE FROM gifts WHERE account = ?').bind(account).run();
+    await env.DB.prepare('DELETE FROM account_settings WHERE account = ?').bind(account).run();
+  }
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM account_keys WHERE phone = ?').bind(phone),
+    env.DB.prepare('DELETE FROM device_bindings WHERE phone = ?').bind(phone),
+    env.DB.prepare('DELETE FROM users WHERE phone = ?').bind(phone),
+    env.DB.prepare('DELETE FROM accounts WHERE phone = ?').bind(phone),
+  ]);
+  return jsonRes({ phone, deleted: true }, 200, origin);
+}
+
+// 全站备份包含的全部表（顺序：先主体后配置；导入时同序）
+const ADMIN_BACKUP_TABLES = [
+  'users', 'accounts', 'device_bindings', 'account_keys',
+  'devices', 'device_settings', 'events', 'gifts',
+  'account_settings', 'feedback', 'register_log',
+];
+
+/** 全站导出：所有表所有行，明文 JSON。 */
+async function handleAdminExportAll(env, origin) {
+  const data = {};
+  let totalRows = 0;
+  for (const table of ADMIN_BACKUP_TABLES) {
+    const { results } = await env.DB.prepare(`SELECT * FROM ${table}`).all();
+    data[table] = results || [];
+    totalRows += data[table].length;
+  }
+  const doc = {
+    app: 'gift-ledger',
+    kind: 'admin-full',
+    version: 1,
+    exportedAt: nowIso(),
+    tables: ADMIN_BACKUP_TABLES,
+    totalRows,
+    data,
+  };
+  return new Response(JSON.stringify(doc, null, 2), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': `attachment; filename="gift-ledger-site-backup-${todayStr()}.json"`,
+      'Cache-Control': 'no-store',
+      ...corsHeaders(origin),
+    },
+  });
+}
+
+/** 全站导入：按表清空后重建（可选 merge 模式则不清空）。明文 JSON。 */
+async function handleAdminImportAll(request, env, origin) {
+  let form;
+  try { form = await request.formData(); } catch { return fail('请求格式错误', 400, origin); }
+  const file = form.get('file');
+  if (!file || typeof file === 'string') return fail('请选择备份文件', 400, origin);
+  const merge = String(form.get('merge') || '') === '1';
+  let doc;
+  try { doc = JSON.parse(await file.text()); } catch { return fail('备份文件不是有效的 JSON', 400, origin); }
+  if (!doc || doc.kind !== 'admin-full' || !doc.data || typeof doc.data !== 'object') {
+    return fail('不是有效的管理后台全站备份文件', 400, origin);
+  }
+
+  const stats = {};
+  try {
+    // 逐表处理：清空（可选）后分批 INSERT OR REPLACE，单表每批 40 条控制语句数
+    for (const table of ADMIN_BACKUP_TABLES) {
+      const rows = Array.isArray(doc.data[table]) ? doc.data[table] : [];
+      if (!merge) {
+        await env.DB.prepare(`DELETE FROM ${table}`).run();
+      }
+      let inserted = 0;
+      for (let i = 0; i < rows.length; i += 40) {
+        const batch = [];
+        for (const row of rows.slice(i, i + 40)) {
+          if (!row || typeof row !== 'object') continue;
+          // 列名只允许字母/数字/下划线，防止从上载文件注入 SQL
+          const cols = Object.keys(row).filter((k) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k));
+          if (!cols.length) continue;
+          const sql = `INSERT OR REPLACE INTO ${table} (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`;
+          batch.push(env.DB.prepare(sql).bind(...cols.map((k) => row[k] ?? null)));
+        }
+        if (batch.length) await env.DB.batch(batch);
+        inserted += batch.length;
+      }
+      stats[table] = inserted;
+    }
+  } catch (e) {
+    console.error('admin import failed', e && e.stack ? e.stack : e);
+    return fail('导入失败：数据结构与当前版本不兼容或文件损坏', 500, origin);
+  }
+  return jsonRes({ ok: true, merge, stats }, 200, origin);
+}
+
 async function handleAccountUnbindDevice(request, env, identity, origin) {
   // 登出/退出：只清除本地登录态。Web 账号的"信任本设备"即 JWT（localStorage 存了 7 天），
   // 清掉即退出；设备密钥/绑定关系保留，便于再次登录免输密码前快速恢复。
@@ -2097,6 +2304,34 @@ async function apiRequest(request, env) {
       if (path === '/api/account/check' && request.method === 'GET') {
         return handleAccountCheck(request, env, origin);
       }
+      // ---- 管理后台（账号密码登录，独立于普通用户体系）----
+      if (path === '/api/admin/login' && request.method === 'POST') {
+        return handleAdminLogin(request, env, origin);
+      }
+      if (path.startsWith('/api/admin/')) {
+        if (!(await verifyAdminToken(request, env))) {
+          return fail('管理员身份无效或已过期，请重新登录', 401, origin);
+        }
+        if (path === '/api/admin/users' && request.method === 'GET') {
+          return handleAdminUsers(env, origin);
+        }
+        if (path === '/api/admin/user/create' && request.method === 'POST') {
+          return handleAdminUserCreate(request, env, origin);
+        }
+        if (path === '/api/admin/user/update' && request.method === 'POST') {
+          return handleAdminUserUpdate(request, env, origin);
+        }
+        if (path === '/api/admin/user/delete' && request.method === 'POST') {
+          return handleAdminUserDelete(request, env, origin);
+        }
+        if (path === '/api/admin/export-all' && request.method === 'GET') {
+          return handleAdminExportAll(env, origin);
+        }
+        if (path === '/api/admin/import-all' && request.method === 'POST') {
+          return handleAdminImportAll(request, env, origin);
+        }
+      }
+
       // 忘记 PIN/密码：管理员重置（新体系密码）/ 清空账号（需 X-Admin-Key 与 env.ADMIN_KEY 匹配）
       if (path === '/api/admin/reset-password' && request.method === 'POST') {
         return handleAdminResetPassword(request, env, origin);

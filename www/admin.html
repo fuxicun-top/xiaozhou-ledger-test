@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>人情录 · 管理后台</title>
+<style>
+  :root{
+    --bg:#f7f4ef; --card:#fff; --ink:#2b2622; --sub:#8a8178; --line:#ebe4da;
+    --brand:#8c6d4f; --brand-d:#6f553c; --ok:#2e7d32; --err:#c0392b; --warn:#9a7b00;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;font-size:14px}
+  .wrap{max-width:960px;margin:0 auto;padding:28px 18px 60px}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
+  header h1{margin:0;font-size:22px;font-weight:600}
+  header .sub{color:var(--sub);font-size:12px;margin-top:3px}
+  .btn{padding:9px 16px;border:1px solid var(--brand);background:var(--brand);color:#fff;border-radius:9px;font-size:13px;cursor:pointer}
+  .btn:hover{background:var(--brand-d)}
+  .btn:disabled{opacity:.55;cursor:default}
+  .btn.ghost{background:#fff;color:var(--brand)}
+  .btn.ghost:hover{background:#f6f1ea}
+  .btn.danger{background:#fff;color:var(--err);border-color:#e6c4bf}
+  .btn.danger:hover{background:#fdf2f0}
+  .btn.sm{padding:5px 10px;font-size:12px;border-radius:7px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:18px;box-shadow:0 2px 10px rgba(0,0,0,.03)}
+  .card h2{margin:0 0 4px;font-size:16px;font-weight:600}
+  .card .desc{color:var(--sub);font-size:12px;margin:0 0 16px;line-height:1.6}
+  .field{margin-bottom:12px}
+  .field label{display:block;font-size:12px;color:var(--sub);margin-bottom:5px}
+  .field input{width:100%;max-width:340px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;outline:none}
+  .field input:focus{border-color:var(--brand)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .msg{font-size:12px;margin-top:10px;min-height:16px;line-height:1.5}
+  .msg.err{color:var(--err)}.msg.ok{color:var(--ok)}.msg.warn{color:var(--warn)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--sub);font-weight:500;font-size:12px}
+  td.num{text-align:right}
+  .tag{display:inline-block;padding:2px 8px;border-radius:20px;background:#f3efe9;color:var(--sub);font-size:11px}
+  .tag.key{background:#eef5ef;color:var(--ok)}
+  .tbl-wrap{overflow-x:auto}
+  .actions{display:flex;gap:6px}
+  .hidden{display:none!important}
+  .toast{position:fixed;left:50%;bottom:30px;transform:translateX(-50%);background:#2b2622;color:#fff;padding:11px 20px;border-radius:10px;font-size:13px;z-index:99;box-shadow:0 8px 30px rgba(0,0,0,.2)}
+  a.home{color:var(--brand);text-decoration:none;font-size:13px;cursor:pointer}
+  .modal{position:fixed;inset:0;background:rgba(28,24,20,.5);display:flex;align-items:center;justify-content:center;padding:16px;z-index:50}
+  .modal .box{background:#fff;border-radius:14px;padding:22px;width:100%;max-width:380px;box-shadow:0 12px 40px rgba(0,0,0,.2)}
+  .modal h3{margin:0 0 14px;font-size:17px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>人情录 · 管理后台</h1>
+      <div class="sub">用户管理 · 全站数据备份与还原</div>
+    </div>
+    <a class="home" href="/">← 返回账本</a>
+  </header>
+
+  <!-- 登录卡片 -->
+  <div class="card" id="loginCard">
+    <h2>管理员登录</h2>
+    <p class="desc">输入 Cloudflare 后台配置的 <b>ADMIN_KEY</b> 密钥（与命令行管理接口同一把）。验证通过后签发 12 小时有效的管理会话，密钥本身不会存在浏览器里。</p>
+    <div class="field"><label>ADMIN_KEY</label><input id="lgKey" type="password" placeholder="粘贴你的 ADMIN_KEY" autocomplete="off"></div>
+    <button class="btn" id="lgBtn">进入管理后台</button>
+    <div class="msg" id="lgMsg"></div>
+  </div>
+
+  <!-- 主体 -->
+  <div id="main" class="hidden">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div><h2>注册用户</h2><p class="desc" style="margin:4px 0 0">共 <b id="userTotal">0</b> 个账号。可为任意用户重置密码（忘记密码时）。</p></div>
+        <div class="row">
+          <button class="btn ghost sm" id="refreshBtn">刷新列表</button>
+          <button class="btn sm" id="addUserBtn">+ 新增用户</button>
+        </div>
+      </div>
+      <div class="tbl-wrap" style="margin-top:14px">
+        <table>
+          <thead><tr><th>手机号</th><th>昵称</th><th>注册时间</th><th class="num">活动</th><th class="num">礼金</th><th>接口密钥</th><th>操作</th></tr></thead>
+          <tbody id="userRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>全站备份与还原</h2>
+      <p class="desc">导出整个站点（全部用户、账本、配置）为明文 JSON。还原时可选「覆盖」（清空后重建，恢复到备份时的状态）或「合并」（保留现有数据，按主键覆盖同 ID 记录）。</p>
+      <div class="row">
+        <button class="btn" id="exportBtn">导出全站备份</button>
+        <label class="btn ghost" style="display:inline-block">选择备份文件<input type="file" id="importFile" accept=".json,application/json" style="display:none"></label>
+        <button class="btn" id="importMergeBtn" disabled>合并导入</button>
+        <button class="btn danger" id="importCoverBtn" disabled>覆盖还原</button>
+      </div>
+      <div class="msg" id="backupMsg"></div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div><h2 style="font-size:14px;margin:0">会话</h2><p class="desc" style="margin:2px 0 0">管理员令牌保存在本机浏览器，12 小时有效。</p></div>
+        <button class="btn ghost sm" id="logoutBtn">退出后台</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 编辑用户弹窗 -->
+<div class="modal hidden" id="userModal">
+  <div class="box">
+    <h3 id="umTitle">编辑用户</h3>
+    <div class="field"><label>手机号</label><input id="umPhone" autocomplete="off"></div>
+    <div class="field"><label>昵称</label><input id="umName" autocomplete="off"></div>
+    <div class="field"><label id="umPwdLabel">密码</label><input id="umPwd" type="password" autocomplete="off"></div>
+    <div class="msg" id="umMsg"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:8px">
+      <button class="btn ghost" id="umCancel">取消</button>
+      <button class="btn" id="umSave">保存</button>
+    </div>
+  </div>
+</div>
+<div class="toast hidden" id="toast"></div>
+
+<script>
+(function(){
+  var TOKEN_KEY='ledger_admin_token';
+  function token(){ try{return localStorage.getItem(TOKEN_KEY)||''}catch(e){return ''} }
+  function setToken(t){ try{t?localStorage.setItem(TOKEN_KEY,t):localStorage.removeItem(TOKEN_KEY)}catch(e){} }
+  function $(id){return document.getElementById(id)}
+  function toast(t){var e=$('toast');e.textContent=t;e.classList.remove('hidden');setTimeout(function(){e.classList.add('hidden')},2600)}
+  function msg(id,t,c){var e=$(id);e.textContent=t||'';e.className='msg'+(c?' '+c:'')}
+
+  function api(path,method,body,raw){
+    var h={'X-Admin-Token':token()};
+    if(body!==undefined) h['Content-Type']='application/json';
+    return fetch(path,{method:method||'GET',headers:h,body:body!==undefined?JSON.stringify(body):undefined})
+      .then(function(r){
+        if(r.status===401){ setToken(''); showLogin(); throw new Error('登录已过期，请重新登录'); }
+        if(!r.ok) return r.json().then(function(d){throw new Error(d.error||('请求失败 '+r.status))});
+        return raw?r:r.json();
+      });
+  }
+
+  function showLogin(){ $('loginCard').classList.remove('hidden'); $('main').classList.add('hidden'); }
+  function showMain(){ $('loginCard').classList.add('hidden'); $('main').classList.remove('hidden'); }
+
+  $('lgBtn').onclick=function(){
+    var b=this;b.disabled=true;msg('lgMsg','');
+    var key=$('lgKey').value.trim();
+    if(!key){msg('lgMsg','请输入 ADMIN_KEY','err');b.disabled=false;return;}
+    fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({adminKey:key})})
+      .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.error||'登录失败');return d})})
+      .then(function(d){ setToken(d.token); $('lgKey').value=''; showMain(); loadUsers(); toast('登录成功'); })
+      .catch(function(e){msg('lgMsg',e.message,'err')})
+      .finally(function(){b.disabled=false});
+  };
+  $('logoutBtn').onclick=function(){ setToken(''); showLogin(); };
+  $('refreshBtn').onclick=function(){loadUsers()};
+
+  function fmtDate(s){ return s?String(s).replace('T',' ').slice(0,16):'—'; }
+  function loadUsers(){
+    api('/api/admin/users','GET').then(function(d){
+      $('userTotal').textContent=d.total;
+      var rows='';
+      (d.users||[]).forEach(function(u){
+        rows+='<tr>'+
+          '<td>'+u.phone+'</td>'+
+          '<td>'+esc(u.name)+'</td>'+
+          '<td>'+fmtDate(u.created_at)+'</td>'+
+          '<td class="num">'+u.eventCount+'</td>'+
+          '<td class="num">'+u.giftCount+'</td>'+
+          '<td>'+(u.hasApiKey?'<span class="tag key">已配置</span>':'<span class="tag">无</span>')+'</td>'+
+          '<td><div class="actions">'+
+            '<button class="btn ghost sm" onclick="__edit(\''+u.phone+'\',\''+escAttr(u.name)+'\')">编辑</button>'+
+            '<button class="btn danger sm" onclick="__del(\''+u.phone+'\')">删除</button>'+
+          '</div></td></tr>';
+      });
+      $('userRows').innerHTML=rows||'<tr><td colspan="7" style="text-align:center;color:#8a8178">暂无用户</td></tr>';
+    }).catch(function(e){toast(e.message)});
+  }
+  function esc(s){return String(s||'').replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}
+  function escAttr(s){return esc(s).replace(/'/g,"\\'")}
+
+  var modalMode='edit';
+  function openModal(mode,phone,name){
+    modalMode=mode;msg('umMsg','');
+    if(mode==='add'){
+      $('umTitle').textContent='新增用户';$('umPhone').value='';$('umPhone').disabled=false;
+      $('umName').value='';$('umPwd').value='';$('umPwdLabel').textContent='密码（8-32 位）';
+    }else{
+      $('umTitle').textContent='编辑用户';$('umPhone').value=phone;$('umPhone').disabled=true;
+      $('umName').value=name||'';$('umPwd').value='';$('umPwdLabel').textContent='新密码（留空不改）';
+    }
+    $('userModal').classList.remove('hidden');
+  }
+  window.__edit=function(phone,name){openModal('edit',phone,name)};
+  window.__del=function(phone){
+    if(!confirm('确定删除用户 '+phone+' 及其全部账本数据？此操作不可恢复。'))return;
+    api('/api/admin/user/delete','POST',{phone:phone}).then(function(){toast('已删除');loadUsers()}).catch(function(e){toast(e.message)});
+  };
+  $('addUserBtn').onclick=function(){openModal('add','','')};
+  $('umCancel').onclick=function(){$('userModal').classList.add('hidden')};
+  $('umSave').onclick=function(){
+    var phone=$('umPhone').value.trim(),name=$('umName').value.trim(),pwd=$('umPwd').value;
+    var b=this;b.disabled=true;msg('umMsg','');
+    var path=modalMode==='add'?'/api/admin/user/create':'/api/admin/user/update';
+    var body=modalMode==='add'?{phone:phone,name:name,password:pwd}:{phone:phone,name:name};
+    if(modalMode==='edit'&&pwd)body.password=pwd;
+    api(path,'POST',body)
+      .then(function(){ $('userModal').classList.add('hidden');toast('已保存');loadUsers(); })
+      .catch(function(e){msg('umMsg',e.message,'err')})
+      .finally(function(){b.disabled=false});
+  };
+
+  $('exportBtn').onclick=function(){
+    var b=this;b.disabled=true;msg('backupMsg','');
+    api('/api/admin/export-all','GET',undefined,true)
+      .then(function(r){return r.blob().then(function(blob){
+        var url=URL.createObjectURL(blob),a=document.createElement('a');
+        a.href=url;a.download='人情录-全站备份-'+new Date().toISOString().slice(0,10)+'.json';
+        a.click();URL.revokeObjectURL(url);
+        msg('backupMsg','全站备份已导出（明文，请妥善保管）','ok');
+      })})
+      .catch(function(e){msg('backupMsg',e.message,'err')})
+      .finally(function(){b.disabled=false});
+  };
+  var pickedFile=null;
+  $('importFile').onchange=function(){ pickedFile=this.files[0]||null;
+    $('importMergeBtn').disabled=!pickedFile;$('importCoverBtn').disabled=!pickedFile;
+    if(pickedFile)msg('backupMsg','已选择：'+pickedFile.name+'（'+Math.round(pickedFile.size/1024)+' KB）','warn');
+  };
+  function doImport(merge){
+    if(!pickedFile)return;
+    if(!merge&&!confirm('覆盖还原会先清空全部数据再导入，确定继续？强烈建议先导出当前数据做备份。'))return;
+    var fd=new FormData();fd.append('file',pickedFile);if(merge)fd.append('merge','1');
+    var btn=merge?$('importMergeBtn'):$('importCoverBtn');btn.disabled=true;
+    fetch('/api/admin/import-all',{method:'POST',headers:{'X-Admin-Token':token()},body:fd})
+      .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.error||'导入失败');return d})})
+      .then(function(d){var n=d.stats||{};msg('backupMsg','导入完成：用户 '+(n.users||0)+'、活动 '+(n.events||0)+'、礼金 '+(n.gifts||0),'ok');loadUsers()})
+      .catch(function(e){msg('backupMsg',e.message,'err')})
+      .finally(function(){btn.disabled=false});
+  }
+  $('importMergeBtn').onclick=function(){doImport(true)};
+  $('importCoverBtn').onclick=function(){doImport(false)};
+
+  // 启动：有 token 直接进主界面并验证
+  if(token()){ showMain(); loadUsers(); } else { showLogin(); }
+})();
+</script>
+</body>
+</html>
