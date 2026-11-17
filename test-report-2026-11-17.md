@@ -294,3 +294,41 @@
 ### 仍保留
 
 - 「绑定手机号」按钮仍需运行时注入（原前端是闭源编译产物，账号面板本就是本项目新增的功能），但已从"反复改文案"瘦身为"单一幂等按钮挂载"，风险显著降低。
+
+---
+
+## 九、个人中心与设置页面板增强（2026-11-17 12:50）
+
+### 需求
+
+1. 备份导出线上 400（已定位：线上未配 `BACKUP_SECRET`，属部署配置，非代码 bug）；
+2. 设置页「运行模式」显示部署域名、「云端服务」显示登录手机号；
+3. 登录态下设置页账号按钮不再弹登录框，改为个人中心；
+4. 右上角头像：未登录点开登录注册、已登录点开账号菜单（个人中心/退出账号）；
+5. 个人中心支持改昵称、密码、绑定手机号。
+
+### 后端改动（src/index.js）
+
+| 新增/修改 | 说明 |
+|---|---|
+| `POST /api/account/profile` | 改昵称，需登录，换发 JWT |
+| `POST /api/account/password` | 改密码，`oldPassword` 验证当前密码，需登录 |
+| `POST /api/account/phone` | 换手机号，`password` 验证当前密码；D1 `batch` 原子迁移 events/gifts/account_settings/account_keys/device_bindings/feedback（account/phone 字段），校验新号未被占用，换发 JWT |
+| `/api/session` 增加 `gatewayPhone` | 登录时返回完整手机号，供前端「云端服务：已连接」显示 |
+
+### 前端改动
+
+- `www/assets/index-CHaro1Qz.js`：`运行模式` 渲染改为 ``云端网关(${location.host})``；`已连接` 渲染改用 `e.gatewayPhone`（完整手机号）；
+- `www/index.html`：新增头像下拉菜单 + 个人中心面板（改昵称/密码/手机号/退出登录）；头像点击分流登录态；设置页账号按钮登录态指向个人中心。
+
+### 验证（T1–T16，全通过）
+
+- 改昵称/密码（含错误旧密码 403 拒绝）、新密码登录 ✅
+- 换手机号：错误密码 403、正确密码迁移成功、旧号失效、新号登录、账本数据（活动+礼金）完整迁移、session 手机号更新 ✅
+- 页面与静态资源 200、bundle 新渲染逻辑与 index.html 新面板元素就位、内联脚本 DOM 模拟执行通过、无功能回归 ✅
+
+### 部署
+
+提交 `06288e8` 已推送 GitHub main，Pages 自动部署。线上备份导出需按第九节 `BACKUP_SECRET` 指引在 Cloudflare Dashboard 配置后恢复。
+
+> ⚠️ `BACKUP_SECRET` 必须在 Cloudflare 控制台为 Worker/Pages 项目添加 Secret（Dashboard → Workers & Pages → 项目 → Settings → Variables and Secrets → Add Secret，名称 `BACKUP_SECRET`，值为任意长随机串），本地没有凭证无法代配。配置后「导出/导入全栈备份」即恢复正常。
