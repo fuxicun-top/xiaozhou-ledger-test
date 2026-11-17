@@ -603,18 +603,22 @@
             var logged = isLogged();
             var label = logged ? "退出登录" : "绑定手机号（登录 / 注册）";
             var btn = document.getElementById("__bindPhone");
-            var created = false;
             if (!btn) {
               btn = document.createElement("button");
               btn.id = "__bindPhone";
               btn.className = "button";
               btn.style.cssText = "width:100%;margin-top:10px;justify-content:center;height:38px;font-size:13px";
-              created = true;
+              btn.textContent = label;
+              btn.onclick = logged ? doLogout : openPanel;
+              sec.appendChild(btn);
+              return;
             }
-            // 每次都刷新文案与点击事件，确保登录态切换后立即生效
-            btn.textContent = label;
+            // 关键：textContent 只在值真的变化时才赋值。相同值赋值也会替换文本节点，
+            // 触发 MutationObserver → refresh() → 再次赋值 → 设置页无限循环卡死。
+            if (btn.textContent !== label) btn.textContent = label;
+            // onclick 是属性赋值，不产生 DOM 节点变化，可安全每次刷新
             btn.onclick = logged ? doLogout : openPanel;
-            if (created || btn.parentNode !== sec) sec.appendChild(btn);
+            if (btn.parentNode !== sec) sec.appendChild(btn);
           }
 
           // 右上角头像（.avatar.small）：未登录点开登录注册，已登录点开账号下拉菜单。
@@ -637,9 +641,19 @@
           }
 
           // 常驻挂载：React 重渲染（路由切换等）会重建 DOM，幂等检查补回。
-          function refresh() { mountButton(); bindAvatar(); }
-          var mo = new MutationObserver(refresh);
+          var mo;
           var appRoot = document.getElementById("root") || document.body;
+          function refresh() {
+            // 注入 DOM 期间暂停观察，避免自身修改产生的变化再次触发回调造成递归卡死
+            if (mo) mo.disconnect();
+            try {
+              mountButton();
+              bindAvatar();
+            } finally {
+              if (mo) mo.observe(appRoot, { childList: true, subtree: true });
+            }
+          }
+          mo = new MutationObserver(refresh);
           mo.observe(appRoot, { childList: true, subtree: true });
 
           var start = function () {
