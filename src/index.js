@@ -846,13 +846,31 @@ async function handleAdminLogin(request, env, origin) {
   return jsonRes({ token, expiresIn: ADMIN_TOKEN_TTL }, 200, origin);
 }
 
-/** 用户列表：users + 每个账号的数据量统计 + 接口密钥状态。 */
-async function handleAdminUsers(env, origin) {
+/** 用户列表（分页 + 手机号/昵称搜索）：本页用户 + 每个账号的数据量统计 + 接口密钥状态。 */
+async function handleAdminUsers(request, env, origin) {
+  const url = new URL(request.url);
+  let size = Number.parseInt(url.searchParams.get('size') || '10', 10);
+  if (!Number.isFinite(size) || size < 1) size = 10;
+  size = Math.min(size, 200);
+  let page = Number.parseInt(url.searchParams.get('page') || '1', 10);
+  if (!Number.isFinite(page) || page < 1) page = 1;
+  const q = asString(url.searchParams.get('q'), 40).trim();
+  const like = q ? ['%' + q + '%', '%' + q + '%'] : [];
+
+  const countRes = await env.DB.prepare(
+    q ? 'SELECT COUNT(*) AS n FROM users WHERE phone LIKE ? OR name LIKE ?'
+      : 'SELECT COUNT(*) AS n FROM users'
+  ).bind(...like).first();
+  const total = (countRes && Number(countRes.n)) || 0;
+
+  const off = (page - 1) * size;
   const { results } = await env.DB.prepare(
-    'SELECT phone, name, created_at FROM users ORDER BY created_at DESC'
-  ).all();
+    q
+      ? 'SELECT phone, name, created_at FROM users WHERE phone LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
+      : 'SELECT phone, name, created_at FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?'
+  ).bind(...like, size, off).all();
   const users = results || [];
-  // 逐账号统计（个人站点量级小，顺序查询足够；避免大 JOIN 拖慢）
+  // 逐账号统计（仅本页，量级小，顺序查询足够；避免对全量用户做逐账号 COUNT）
   for (const u of users) {
     const account = `user:${u.phone}`;
     const [ev, gf, key] = await Promise.all([
@@ -864,7 +882,7 @@ async function handleAdminUsers(env, origin) {
     u.giftCount = (gf && Number(gf.n)) || 0;
     u.hasApiKey = Boolean(key);
   }
-  return jsonRes({ users, total: users.length }, 200, origin);
+  return jsonRes({ users, total, page, size }, 200, origin);
 }
 
 /** 管理员新增用户（手机号+密码+昵称）。 */
@@ -889,7 +907,7 @@ async function handleAdminUserCreate(request, env, origin) {
   return jsonRes({ phone, name, created: true }, 200, origin);
 }
 
-/** 管理员改用户信息：昵称 / 密码（均按传入字段可选）。 */
+/** 管理员改用户信息：昵称 / 密码 / 手机号（均按传入字段可选；改手机号会原子迁移全部账号数据）。 */
 async function handleAdminUserUpdate(request, env, origin) {
   const body = await readJson(request);
   if (!body) return fail('请求内容格式错误', 400, origin);
@@ -905,6 +923,35 @@ async function handleAdminUserUpdate(request, env, origin) {
     const salt = crypto.randomUUID();
     passwordHash = `${salt}|${await hashPassword(password, salt)}`;
   }
+
+  // 改手机号：校验新号 → 冲突检测 → 原子迁移全部账号数据
+  const newPhone = asString(body.newPhone, 20).trim();
+  if (newPhone) {
+    if (!validPhone(newPhone)) return fail('请输入正确的新手机号', 400, origin);
+    if (newPhone === phone) return fail('新手机号不能与当前手机号相同', 400, origin);
+    const dup = await env.DB.prepare('SELECT 1 AS x FROM users WHERE phone = ?').bind(newPhone).first();
+    if (dup) return fail('该手机号已被使用', 409, origin);
+    const oldAccount = `user:${phone}`;
+    const newAccount = `user:${newPhone}`;
+    // 全部迁移在一个 batch 内原子执行：任一步失败则整体回滚，避免半迁移状态。
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO users (phone, name, password_hash, created_at) VALUES (?, ?, ?, ?)')
+        .bind(newPhone, name, passwordHash, user.created_at),
+      env.DB.prepare('DELETE FROM users WHERE phone = ?').bind(phone),
+      env.DB.prepare('UPDATE events SET account = ? WHERE account = ?').bind(newAccount, oldAccount),
+      env.DB.prepare('UPDATE gifts SET account = ? WHERE account = ?').bind(newAccount, oldAccount),
+      env.DB.prepare(
+        `INSERT OR REPLACE INTO account_settings (account, ai_base_url, ai_api_key, ai_model)
+         SELECT ?, ai_base_url, ai_api_key, ai_model FROM account_settings WHERE account = ?`
+      ).bind(newAccount, oldAccount),
+      env.DB.prepare('DELETE FROM account_settings WHERE account = ?').bind(oldAccount),
+      env.DB.prepare('UPDATE account_keys SET phone = ? WHERE phone = ?').bind(newPhone, phone),
+      env.DB.prepare('UPDATE device_bindings SET phone = ? WHERE phone = ?').bind(newPhone, phone),
+      env.DB.prepare('UPDATE feedback SET account = ? WHERE account = ?').bind(newAccount, oldAccount),
+    ]);
+    return jsonRes({ phone: newPhone, oldPhone: phone, name, changed: true }, 200, origin);
+  }
+
   await env.DB.prepare('UPDATE users SET name = ?, password_hash = ? WHERE phone = ?')
     .bind(name, passwordHash, phone)
     .run();
@@ -1212,12 +1259,17 @@ async function handleAdminLogs(request, env, origin) {
   return jsonRes({ page, limit, total, logs: rowsRes.results || [] }, 200, origin);
 }
 
-/** 清理 N 天前的日志（管理员手动瘦身）。 */
+/** 清理日志：days 为正整数 → 删 N 天前的旧日志（自动瘦身）；days 为 0 / 缺省 → 清空全部日志（手动）。 */
 async function handleAdminLogsPurge(request, env, origin) {
   const body = await readJson(request);
   if (!body) return fail('请求内容格式错误', 400, origin);
-  const days = Number.parseInt(asString(body.days, 10), 10);
-  if (!Number.isFinite(days) || days < 1) return fail('days 需为正整数', 400, origin);
+  const raw = body.days === undefined || body.days === null || body.days === '' ? 0 : Number.parseInt(asString(body.days, 10), 10);
+  const days = Number.isFinite(raw) ? raw : 0;
+  if (days === 0) {
+    const res = await env.DB.prepare('DELETE FROM logs').run();
+    return jsonRes({ purged: (res && res.meta && res.meta.changes) || 0, all: true }, 200, origin);
+  }
+  if (days < 1) return fail('days 需为 0（清空全部）或正整数', 400, origin);
   const cutoff = new Date(Date.now() - days * 86400000).toISOString();
   const res = await env.DB.prepare('DELETE FROM logs WHERE ts < ?').bind(cutoff).run();
   return jsonRes({ purged: (res && res.meta && res.meta.changes) || 0, days }, 200, origin);
@@ -2801,7 +2853,7 @@ async function apiRequest(request, env) {
           return res;
         };
         if (path === '/api/admin/users' && request.method === 'GET') {
-          return adminLog(handleAdminUsers(env, origin));
+          return adminLog(handleAdminUsers(request, env, origin));
         }
         if (path === '/api/admin/user/create' && request.method === 'POST') {
           return adminLog(await handleAdminUserCreate(request, env, origin));

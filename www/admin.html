@@ -51,6 +51,12 @@
   .tab.active{background:var(--brand);color:#fff;border-color:var(--brand)}
   .pager{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:14px;font-size:12px;color:var(--sub)}
   .tbl-wrap{overflow-x:auto}
+  /* 操作日志表：自适应，不超出容器宽度（宽列换行/截断，窄列固定） */
+  table.log-table{table-layout:fixed;width:100%}
+  table.log-table th,table.log-table td{white-space:normal;vertical-align:top;overflow-wrap:break-word}
+  table.log-table td.c-time{font-family:monospace;font-size:12px;white-space:nowrap}
+  table.log-table td.c-ok{white-space:nowrap}
+  table.log-table td.c-ua,table.log-table td.c-detail{font-size:11px;line-height:1.5}
   .actions{display:flex;gap:6px}
   .hidden{display:none!important}
   .toast{position:fixed;left:50%;bottom:30px;transform:translateX(-50%);background:#2b2622;color:#fff;padding:11px 20px;border-radius:10px;font-size:13px;z-index:99;box-shadow:0 8px 30px rgba(0,0,0,.2)}
@@ -84,24 +90,30 @@
     <!-- ① 用户管理 -->
     <div class="card">
       <div class="row" style="justify-content:space-between">
-        <div><h2>注册用户</h2><p class="desc" style="margin:4px 0 0">共 <b id="userTotal">0</b> 个账号。可为任意用户重置密码（忘记密码时）。</p></div>
+        <div><h2>注册用户</h2><p class="desc" style="margin:4px 0 0">按手机号/昵称搜索，分页查看。可为任意用户重置密码、改昵称、更换手机号（用户换号时，数据自动迁移）。</p></div>
         <div class="row">
           <button class="btn ghost sm" id="refreshBtn">刷新列表</button>
           <button class="btn sm" id="addUserBtn">+ 新增用户</button>
         </div>
       </div>
-      <div class="tbl-wrap" style="margin-top:14px">
+      <div class="inline" style="margin-top:14px;margin-bottom:10px">
+        <input id="userSearch" placeholder="搜索手机号 / 昵称" autocomplete="off" style="width:200px">
+        <button class="btn sm" id="userSearchBtn">搜索</button>
+        <select id="userPageSize"><option value="10">每页 10</option><option value="20">每页 20</option><option value="50">每页 50</option></select>
+      </div>
+      <div class="tbl-wrap">
         <table>
           <thead><tr><th>手机号</th><th>昵称</th><th>注册时间</th><th class="num">活动</th><th class="num">礼金</th><th>接口密钥</th><th>操作</th></tr></thead>
           <tbody id="userRows"></tbody>
         </table>
       </div>
+      <div class="pager" id="userPager"></div>
     </div>
 
     <!-- ② 账号数据管理（编辑任意用户的数据/配置 + 单账号导入导出） -->
     <div class="card" id="accountCard">
       <h2>账号数据管理</h2>
-      <p class="desc">输入用户手机号后载入该账号：分页查看/增删改「礼金」「活动」，编辑「AI/小程序配置」「接口密钥」「设备绑定」，并对该账号做独立的导入与导出。默认每页 20 条。</p>
+      <p class="desc">输入用户手机号后载入该账号：分页查看/增删改「礼金」「活动」，编辑「AI/小程序配置」「接口密钥」「设备绑定」，并对该账号做独立的导入与导出。默认每页 10 条。</p>
       <div class="inline" style="margin-bottom:12px">
         <input id="acPhone" placeholder="用户手机号，如 13800000000" autocomplete="off" style="width:220px">
         <button class="btn sm" id="acLoadBtn">载入账号</button>
@@ -160,18 +172,22 @@
         <input id="lgAction" placeholder="动作，如 gift.create" autocomplete="off" style="width:150px">
         <input id="lgFrom" type="date" title="起始日期" style="width:140px">
         <input id="lgTo" type="date" title="截止日期" style="width:140px">
-        <select id="lgLimit"><option value="50">每页 50</option><option value="100">每页 100</option><option value="200">每页 200</option></select>
+        <select id="lgLimit"><option value="10">每页 10</option><option value="20">每页 20</option><option value="50">每页 50</option><option value="100">每页 100</option><option value="200">每页 200</option></select>
         <button class="btn sm" id="lgQueryBtn">查询</button>
       </div>
       <div class="inline" style="margin-bottom:12px">
         <button class="btn ghost sm" id="lgExportBtn">导出日志</button>
-        <button class="btn danger sm" id="lgPurgeBtn">立即清理（按保留天数）</button>
+        <button class="btn danger sm" id="lgPurgeBtn">清空全部日志</button>
         <span class="msg" id="lgPurgeMsg" style="margin:0"></span>
       </div>
 
       <div class="tbl-wrap">
-        <table>
-          <thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>方法/路径</th><th class="num">结果</th><th>IP</th><th>设备</th><th>备注</th></tr></thead>
+        <table class="log-table">
+          <thead><tr>
+            <th style="width:130px">时间</th><th style="width:120px">操作人</th><th style="width:110px">动作</th>
+            <th style="width:150px">方法/路径</th><th class="num" style="width:56px">结果</th>
+            <th style="width:110px">IP</th><th>设备</th><th>备注</th>
+          </tr></thead>
           <tbody id="logRows"></tbody>
         </table>
       </div>
@@ -193,6 +209,7 @@
   <div class="box">
     <h3 id="umTitle">编辑用户</h3>
     <div class="field"><label>手机号</label><input id="umPhone" autocomplete="off"></div>
+    <div class="field" id="umNewPhoneWrap"><label>更换手机号（留空则不改；会同步迁移该账号全部账本数据）</label><input id="umNewPhone" placeholder="如 13900001111" autocomplete="off"></div>
     <div class="field"><label>昵称</label><input id="umName" autocomplete="off"></div>
     <div class="field"><label id="umPwdLabel">密码</label><input id="umPwd" type="password" autocomplete="off"></div>
     <div class="msg" id="umMsg"></div>
@@ -291,13 +308,24 @@
       .finally(function(){b.disabled=false});
   };
   $('logoutBtn').onclick=function(){ setToken(''); showLogin(); };
-  $('refreshBtn').onclick=function(){loadUsers()};
 
   /* ================= ① 用户管理 ================= */
   function fmtDate(s){ return s?String(s).replace('T',' ').slice(0,16):'—'; }
-  function loadUsers(){
-    api('/api/admin/users','GET').then(function(d){
-      $('userTotal').textContent=d.total;
+  var userPage=1, userPageSize=10;
+  function userPagerHtml(total,pages){
+    var h='<div class="pager">'+
+      '<button class="btn ghost sm" '+(userPage<=1?'disabled':'')+' onclick="__userPage('+(userPage-1)+')">上一页</button>'+
+      '<span>'+userPage+' / '+pages+' · 共 '+total+' 个账号</span>'+
+      '<button class="btn ghost sm" '+(userPage>=pages?'disabled':'')+' onclick="__userPage('+(userPage+1)+')">下一页</button></div>';
+    return h;
+  }
+  window.__userPage=function(n){loadUsers(Math.max(1,n));};
+  function loadUsers(page){
+    userPage=page||1;
+    var p=new URLSearchParams({page:String(userPage),size:String(userPageSize)});
+    var q=$('userSearch')?$('userSearch').value.trim():'';
+    if(q)p.set('q',q);
+    api('/api/admin/users?'+p.toString(),'GET').then(function(d){
       var rows='';
       (d.users||[]).forEach(function(u){
         rows+='<tr>'+
@@ -312,17 +340,26 @@
             '<button class="btn danger sm" onclick="__del(\''+u.phone+'\')">删除</button>'+
           '</div></td></tr>';
       });
-      $('userRows').innerHTML=rows||'<tr><td colspan="7" style="text-align:center;color:#8a8178">暂无用户</td></tr>';
+      $('userRows').innerHTML=rows||'<tr><td colspan="7" style="text-align:center;color:#8a8178">'+(q?'未找到匹配的用户':'暂无用户')+'</td></tr>';
+      var pages=Math.max(1,Math.ceil((d.total||0)/userPageSize));
+      $('userPager').innerHTML=userPagerHtml(d.total||0,pages);
     }).catch(function(e){toast(e.message)});
   }
+  $('userSearchBtn').onclick=function(){userPage=1;loadUsers(1);};
+  $('userSearch').onkeydown=function(e){if(e.key==='Enter'){userPage=1;loadUsers(1);}};
+  $('userPageSize').onchange=function(){userPageSize=Number(this.value);userPage=1;loadUsers(1);};
+  $('refreshBtn').onclick=function(){loadUsers(1);};
+  $('addUserBtn').onclick=function(){openModal('add','','')};
   var modalMode='edit';
   function openModal(mode,phone,name){
     modalMode=mode;msg('umMsg','');
     if(mode==='add'){
       $('umTitle').textContent='新增用户';$('umPhone').value='';$('umPhone').disabled=false;
+      $('umNewPhone').value='';$('umNewPhoneWrap').style.display='none';
       $('umName').value='';$('umPwd').value='';$('umPwdLabel').textContent='密码（8-32 位）';
     }else{
       $('umTitle').textContent='编辑用户';$('umPhone').value=phone;$('umPhone').disabled=true;
+      $('umNewPhone').value='';$('umNewPhoneWrap').style.display='';
       $('umName').value=name||'';$('umPwd').value='';$('umPwdLabel').textContent='新密码（留空不改）';
     }
     $('userModal').classList.remove('hidden');
@@ -330,9 +367,8 @@
   window.__edit=function(phone,name){openModal('edit',phone,name)};
   window.__del=function(phone){
     if(!confirm('确定删除用户 '+phone+' 及其全部账本数据？此操作不可恢复。'))return;
-    api('/api/admin/user/delete','POST',{phone:phone}).then(function(){toast('已删除');loadUsers()}).catch(function(e){toast(e.message)});
+    api('/api/admin/user/delete','POST',{phone:phone}).then(function(){toast('已删除');loadUsers(userPage)}).catch(function(e){toast(e.message)});
   };
-  $('addUserBtn').onclick=function(){openModal('add','','')};
   $('umCancel').onclick=function(){$('userModal').classList.add('hidden')};
   $('umSave').onclick=function(){
     var phone=$('umPhone').value.trim(),name=$('umName').value.trim(),pwd=$('umPwd').value;
@@ -340,20 +376,31 @@
     var path=modalMode==='add'?'/api/admin/user/create':'/api/admin/user/update';
     var body=modalMode==='add'?{phone:phone,name:name,password:pwd}:{phone:phone,name:name};
     if(modalMode==='edit'&&pwd)body.password=pwd;
+    var newPhone=modalMode==='edit'?$('umNewPhone').value.trim():'';
+    if(newPhone){ body.newPhone=newPhone; delete body.name; } // 换号时只迁移手机号
     api(path,'POST',body)
-      .then(function(){ $('userModal').classList.add('hidden');toast('已保存');loadUsers(); })
+      .then(function(d){ $('userModal').classList.add('hidden');toast(newPhone?('已更换手机号为 '+newPhone):'已保存');loadUsers(newPhone?1:userPage); })
       .catch(function(e){msg('umMsg',e.message,'err')})
       .finally(function(){b.disabled=false});
   };
 
   /* ================= ② 账号数据管理 ================= */
-  var acPhone='', acKind='gifts', acPage=1, acEvents=[]; // acEvents 缓存该账号活动（供礼金弹窗选择）
-  var PAGE_SIZE=20;
+  var acPhone='', acKind='gifts', acPage=1, acEvents=[], acPageSize=10; // acEvents 缓存该账号活动（供礼金弹窗选择）
+  var AC_PAGE_SIZES=[10,20,50];
+
+  function pageSizeSelectHtml(kind){
+    var opts=AC_PAGE_SIZES.map(function(n){return '<option value="'+n+'"'+(n===acPageSize?' selected':'')+'>每页 '+n+'</option>'}).join('');
+    return '<select id="acPageSize">'+opts+'</select>';
+  }
+  function bindPageSizeSelect(){
+    var sel=$('acPageSize');
+    if(sel) sel.onchange=function(){acPageSize=Number(sel.value);acPage=1;loadAccountPage(acKind);};
+  }
 
   $('acLoadBtn').onclick=function(){
     var ph=$('acPhone').value.trim();
     if(!ph){msg('acMsg','请输入手机号','err');return;}
-    acPhone=ph;acPage=1;acEvents=[];acKind='gifts';
+    acPhone=ph;acPage=1;acEvents=[];acKind='gifts';acPageSize=10;
     setTabActive('gifts');
     $('acBody').classList.remove('hidden');
     $('acPhoneLabel').textContent=ph;
@@ -377,13 +424,13 @@
   }
 
   function loadAccountPage(kind){
-    var p=new URLSearchParams({phone:acPhone,kind:kind,page:acPage,size:PAGE_SIZE});
+    var p=new URLSearchParams({phone:acPhone,kind:kind,page:acPage,size:acPageSize});
     api('/api/admin/account/data?'+p.toString(),'GET')
       .then(function(d){
         var data=d.data||[],total=d.total||0,box=$('acData');
         var html='<div class="row" style="justify-content:space-between;margin-bottom:10px">'+
           '<span style="font-size:12px;color:var(--sub)">共 '+total+' 条 · 第 '+(d.page||1)+' 页</span>'+
-          '<button class="btn sm" onclick="__acAdd()">'+(kind==='gifts'?'+ 新增礼金':'+ 新增活动')+'</button></div>';
+          '<div class="inline">'+pageSizeSelectHtml(kind)+'<button class="btn sm" onclick="__acAdd()">'+(kind==='gifts'?'+ 新增礼金':'+ 新增活动')+'</button></div></div>';
         html+='<div class="tbl-wrap"><table><thead><tr>'+
           (kind==='gifts'
             ?'<th>对象</th><th>关系</th><th>方向</th><th class="num">金额</th><th>方式</th><th>日期</th><th>备注</th><th>操作</th>'
@@ -408,11 +455,12 @@
         html+=rows+'</tbody></table></div>';
         html+=pagerHtml(total);
         box.innerHTML=html||'';
+        bindPageSizeSelect();
       })
       .catch(function(e){$('acData').innerHTML='<div class="msg err">'+esc(e.message)+'</div>'});
   }
   function pagerHtml(total){
-    var pages=Math.max(1,Math.ceil(total/PAGE_SIZE));
+    var pages=Math.max(1,Math.ceil(total/acPageSize));
     var h='<div class="pager">'+
       '<button class="btn ghost sm" '+(acPage<=1?'disabled':'')+' onclick="__acPage('+(acPage-1)+')">上一页</button>'+
       '<span>'+acPage+' / '+pages+'</span>'+
@@ -462,7 +510,7 @@
   window.__acEditGift=function(id){
     var g=null;
     // 从当前分页 data 无法直接拿到（未缓存），重新查一次该条
-    api('/api/admin/account/data?'+new URLSearchParams({phone:acPhone,kind:'gifts',page:acPage,size:PAGE_SIZE}).toString(),'GET')
+    api('/api/admin/account/data?'+new URLSearchParams({phone:acPhone,kind:'gifts',page:acPage,size:acPageSize}).toString(),'GET')
       .then(function(d){
         var row=(d.data||[]).filter(function(x){return x.id===id})[0];
         openGiftModal(row||{id:id});
@@ -655,7 +703,7 @@
   $('importCoverBtn').onclick=function(){doImport(false)};
 
   /* ================= ④ 全栈操作日志 ================= */
-  var logPage=1,logLimit=50;
+  var logPage=1,logLimit=10;
   function loadLogs(page){
     logPage=page||1;
     var p=new URLSearchParams({page:String(logPage),limit:String(logLimit)});
@@ -668,14 +716,14 @@
         var logs=d.logs||[];
         var rows=logs.map(function(l){
           return '<tr>'+
-            '<td style="font-family:monospace;font-size:12px">'+fmtDate(l.ts)+'</td>'+
+            '<td class="c-time">'+fmtDate(l.ts)+'</td>'+
             '<td>'+esc(l.actor)+'</td>'+
             '<td><span class="tag">'+esc(l.action)+'</span></td>'+
-            '<td style="font-size:12px">'+esc(l.method)+' <span style="color:var(--sub)">'+esc(l.path)+'</span></td>'+
-            '<td class="num">'+(l.ok?'<span class="tag ok">'+l.status+'</span>':'<span class="tag err">'+l.status+'</span>')+'</td>'+
-            '<td style="font-family:monospace;font-size:12px">'+esc(l.ip)+'</td>'+
-            '<td class="wrap" style="font-size:11px;max-width:220px">'+esc(l.ua)+'</td>'+
-            '<td class="wrap" style="font-size:12px">'+esc(l.detail)+'</td>'+
+            '<td class="c-detail">'+esc(l.method)+' <span style="color:var(--sub)">'+esc(l.path)+'</span></td>'+
+            '<td class="num c-ok">'+(l.ok?'<span class="tag ok">'+l.status+'</span>':'<span class="tag err">'+l.status+'</span>')+'</td>'+
+            '<td class="c-time">'+esc(l.ip)+'</td>'+
+            '<td class="c-ua">'+esc(l.ua)+'</td>'+
+            '<td class="c-detail">'+esc(l.detail)+'</td>'+
             '</tr>';
         }).join('');
         $('logRows').innerHTML=rows||'<tr><td colspan="8" style="text-align:center;color:#8a8178">暂无日志</td></tr>';
@@ -690,10 +738,9 @@
   window.__logPage=function(n){loadLogs(Math.max(1,n));};
   $('lgQueryBtn').onclick=function(){logLimit=Number($('lgLimit').value);loadLogs(1);};
   $('lgPurgeBtn').onclick=function(){
-    var days=$('lgRetention').value;
-    if(!confirm('立即清理 '+days+' 天前的日志？（也可等待系统每小时自动清理）'))return;
-    api('/api/admin/logs/purge','POST',{days:days})
-      .then(function(d){msg('lgPurgeMsg','已清理 '+d.purged+' 条旧日志','ok');loadLogs(1);})
+    if(!confirm('确定清空全部日志？此操作不可恢复。（保留天数仍由系统每小时自动清理）'))return;
+    api('/api/admin/logs/purge','POST',{days:0})
+      .then(function(d){msg('lgPurgeMsg','已清空全部日志（'+d.purged+' 条）','ok');loadLogs(1);loadRetention();})
       .catch(function(e){msg('lgPurgeMsg',e.message,'err')});
   };
   $('lgExportBtn').onclick=function(){
