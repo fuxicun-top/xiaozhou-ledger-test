@@ -574,10 +574,10 @@
 
           // Web 部署：注入设置页账号入口 + 右上角头像菜单。
           // 运行模式/云端服务文案已由构建产物结合 /api/session 原生渲染。
-          injectLedgerPanel(openAccountPanel, openProfilePanel, openAcctMenu, doLogout);
+          injectLedgerPanel(openAccountPanel, openAcctMenu, doLogout);
         }
 
-        function injectLedgerPanel(openPanel, openProfile, openAcctMenu, doLogout) {
+        function injectLedgerPanel(openPanel, openAcctMenu, doLogout) {
           function textOf(el) {
             return el ? (el.textContent || "").trim() : "";
           }
@@ -598,24 +598,26 @@
 
           // 把账号按钮挂进「账户」面板：
           //  未登录 → 「绑定手机号（登录 / 注册）」点开登录注册框；
-          //  已登录 → 「个人中心 / 退出账号」点开个人中心（不再弹登录框）。
+          //  已登录 → 「退出登录」点击直接退出（个人中心只在右上角头像菜单里）。
           // React 每次重渲染都会重建 section DOM，注入的按钮会被顶掉——幂等补回。
           function mountButton() {
             var sec = findAccountSec();
             if (!sec) return;
             var logged = isLogged();
-            var label = logged ? "个人中心 / 退出账号" : "绑定手机号（登录 / 注册）";
+            var label = logged ? "退出登录" : "绑定手机号（登录 / 注册）";
             var btn = document.getElementById("__bindPhone");
-            if (btn && btn.parentNode === sec && btn.textContent === label) return;
+            var created = false;
             if (!btn) {
               btn = document.createElement("button");
               btn.id = "__bindPhone";
               btn.className = "button";
               btn.style.cssText = "width:100%;margin-top:10px;justify-content:center;height:38px;font-size:13px";
+              created = true;
             }
-            btn.onclick = logged ? openProfile : openPanel;
+            // 每次都刷新文案与点击事件，确保登录态切换后立即生效
             btn.textContent = label;
-            sec.appendChild(btn);
+            btn.onclick = logged ? doLogout : openPanel;
+            if (created || btn.parentNode !== sec) sec.appendChild(btn);
           }
 
           // 右上角头像（.avatar.small）：未登录点开登录注册，已登录点开账号下拉菜单。
