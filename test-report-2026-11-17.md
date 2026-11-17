@@ -391,3 +391,53 @@ README 重写管理后台章节（单 ADMIN_KEY 方案）与五步部署变量�
 ### 提交
 
 `495816e` 已推送 GitHub main。测试产生的备份文件已删除，工作区干净。
+
+---
+
+## 十二、死代码清理 + 管理接口路由 bug 修复（2026-11-17 16:35）
+
+### 环境变量作用澄清
+
+- `MAX_ACCOUNTS`：本实例可注册账号总数上限（防刷爆免费配额），不设=不限；
+- `REGISTER_COOLDOWN_MINUTES`：同一设备两次注册的最小间隔分钟（防脚本批量刷号），不设=不限。
+两者均在注册接口 `src/index.js` 生效，属可选防刷措施。
+
+### 清理（脚本统计函数调用次数后确认）
+
+| 项 | 处理 |
+|---|---|
+| `requireIdentity`（index.js:349，0 调用） | 删除 |
+| `SCHEMA_VERSION`（schema.js:13，全仓库无引用） | 删除 |
+| `handleAdminPurge` / `handleAdminUserDelete` 重复的删号逻辑 | 合并为 `purgeAccountData(env, phone)` |
+| 前端 `#lg-unbind` 与 `doLogout` 重复退出逻辑 | 统一复用 `doLogout` |
+
+保留（有文档/兼容价值，未删）：`/api/account/device` 公开 API、`api_key_hash` 等遗留字段、8 个只读统计 API。`schema.sql` 与 `schema.js` 经核对完全一致，无需改动。
+
+### 修复的 bug（清理过程中发现）
+
+`/api/admin/` 前缀拦截块误吞了 `reset-password`/`purge-account` 两个命令行接口，导致它们原本用 `X-Admin-Key` 鉴权却先撞上 `X-Admin-Token` 校验返回 401。将这两个路由移到拦截块之前。这是上一轮加管理后台时引入的潜伏 bug（当时只测了 X-Admin-Token 系列接口，没测命令行接口）。
+
+### 验证
+
+本地 R1–R6：健康/自愈建表、注册、管理员登录、命令行清账号（修复后 purged:true）、命令行重置密码（新密码可登录）、管理后台删用户、全站备份还原（52 行）全通过。线上：健康 ok、命令行接口错误 key 返回 403（不再是 401）、管理后台登录正常。提交 `b3e4ee1` 已推送，工作区干净。
+
+---
+
+## 十三、设置页卡死修复（2026-11-17 16:54）
+
+### 现象
+用户报告：首次加载能显示，点导航后页面卡死；除 QQ 浏览器外所有浏览器（Chrome/Edge/手机端）都一样。上一轮曾误判为浏览器缓存（升版本号 v2→v4），未解决。
+
+### 定位方法
+用本机 Chrome + puppeteer-core 真实渲染线上页面，逐个点击导航项并检测响应性：账本总览/份子钱记录/统计分析/往来联系人/AI 记账全部正常，**只有「设置」页 FROZEN**。据此锁定问题在设置页专用的账户区块注入逻辑。（jsdom 对主 bundle 的报错经比对原始版本同样存在，属环境误报，排除。）
+
+### 根因
+上一轮把设置页按钮改成「退出登录」时，删掉了 `mountButton()` 的幂等守卫，改为每次都执行 `btn.textContent = label`。即使值相同，`textContent` 赋值也会替换文本节点 → 产生 DOM 变更 → 触发 `MutationObserver` → 回调 `refresh()` → 再次 `textContent` 赋值 → **无限循环，设置页卡死**。其他页面没有「身份与运行状态」区块，`findAccountSec()` 返回 null 直接退出，故不受影响；QQ 浏览器内核可能合并了相同值的 DOM 变更，侥幸未触发。
+
+### 修复（www/index.html）
+1. 恢复幂等：`textContent` 仅在值真的变化时才赋值（`if (btn.textContent !== label)`）；新建按钮时一次性设好文案与事件；
+2. 双重保护：`refresh()` 内先 `mo.disconnect()`，注入 DOM 完成后再 `observe()`，彻底杜绝自身修改触发递归；
+3. 资源版本号 v4→v5 强制刷新缓存。
+
+### 验证
+提交 `b47adcf` + `a2740b1` 推送，线上部署后真实 Chrome 复测：首次加载 rootLen 14812；依次点击份子钱记录/统计分析/**设置**/往来联系人/**再次设置**/账本总览，全部正常响应（设置页 rootLen 8115、按钮正确注入），无卡死、无控制台错误。✅
