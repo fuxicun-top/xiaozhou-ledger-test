@@ -112,11 +112,32 @@
 
 ### 第 5 步：接 GitHub 自动部署
 
-Worker → **Settings → Builds → Connect to Git**：
+Worker → **Settings → Builds → Connect to Git**，按顺序填：
 
-1. 授权 GitHub，选择你 **fork 的仓库**、分支 `main`。
-2. 构建命令保持默认（`npm install && npx wrangler deploy`），保存。
-3. 第一次会自动构建部署；以后你往仓库 push 任何改动，都会自动重新部署。
+**① 连接到仓库**
+
+| 界面项 | 填什么 |
+| --- | --- |
+| Git 帐户 | 选你刚才授权 GitHub 时登录的账号 |
+| 存储库 | 选你 **fork 的仓库**（如 `xiaozhou-ledger-test`） |
+| 分支 | `main` |
+
+**② 构建配置（关键，别用默认值！）**
+
+CF 后台会自动带出两个默认命令，但本项目的情况如下，请照改：
+
+| 界面项 | CF 默认值 | 本项目要改成 | 为什么 |
+| --- | --- | --- | --- |
+| 构建命令（Build command，可选） | `npm run build` | **留空**（或填 `npm install`） | 本项目的 `package.json` **没有 `build` 脚本**，前端是预编译好的静态文件（`www/`），根本不需要构建。保持默认会报 `npm error Missing script: "build"` 导致构建失败。 |
+| 部署命令（Deploy command） | `npx wrangler deploy` | **保持不变** | 这就是部署 Worker 的正确命令。 |
+
+> 构建命令那栏直接**清空**最省事——`npm install` 其实也不强制（CD 环境会自动装依赖），但填了也不会错。
+>
+> ⚠️ 「启用预览（Enable preview deployments）」默认开启，它会用 `npx wrangler preview`（CF 默认值）为 PR 生成预览部署。本项目不需要预览环境，可**关掉**避免预览任务因该命令报错；开着也不影响 `main` 分支的正式部署。
+
+**③ 保存并验证**
+
+点保存后 CF 会立即触发第一次构建部署（几分钟）。以后你往 `main` push 任何改动，都会自动重新部署。
 
 > 不想接 Git？也可以本地装 Node 后手动部署，见下面「命令行部署」。
 
