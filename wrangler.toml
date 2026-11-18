@@ -6,7 +6,7 @@
 
 # ① Worker 名称：必须是全局唯一的标识，也是 CF 控制台里的项目名。
 #    要改名需同步改「第 2 步」里 GitHub 仓库和 CI 构建的引用。
-name = "xiaozhou-ledger-web"
+name = "xiaozhou-ledger-test"
 
 # ② 入口文件：Worker 主程序（HTTP 请求进来执行的就是它）。
 #    本项目所有 /api 路由、JWT 校验、D1 读写都在 src/index.js。
@@ -24,8 +24,8 @@ compatibility_date = "2026-11-14"
 #    ⚠️ fork 本仓库的人【必须】把 database_id 换成自己库的 UUID，否则连到别人的库。
 [[d1_databases]]
 binding = "DB"
-database_name = "xiaozhou-ledger-web"
-database_id = "da712a6f-2511-41de-a4d2-cb9f6764c0b4"
+database_name = "xiaozhou-ledger-test"
+database_id = "7ee69bcc-d5c8-4f41-8da4-5228142027bc"
 
 # ⑤ 静态资源托管（单域名方案）：
 #    Cloudflare Assets 把 www/ 下的文件当静态资源直接下发，不走 Worker 代码。
