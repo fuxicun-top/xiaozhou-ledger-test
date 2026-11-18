@@ -4,6 +4,8 @@
 >
 > 在线示例（本仓库 owner）：<https://rq.fuxicun.top>
 >
+> 演示账号（可直接登录查看效果）：手机号 `18000000000`，密码 `12345678`（内置模拟账本：7 种事由各 2 个活动、6 种关系共 28 条礼金记录）。
+>
 > **fork 本仓库后，照着下面的「控制台部署（推荐）」在网页上点几下即可上线**，不用装命令行、不用手工建表——Worker 首次访问会自动建齐所有表。
 
 ---
@@ -68,7 +70,7 @@
    database_id = "<你的 UUID>"       # ← 换成第 1 步复制的 Database ID
    ```
 
-   > 可选参数（`MAX_ACCOUNTS`、`REGISTER_COOLDOWN_MINUTES` 等不敏感的）可在这个文件里加 `[vars]` 段，写法见下方[「wrangler.toml 配置说明」](#wranglertoml-配置说明)。敏感密钥（`ADMIN_KEY`、`JWT_SECRET`）不要写进本文件，见第 4 步。
+   > 可选参数（`MAX_ACCOUNTS`、`REGISTER_COOLDOWN_MINUTES`、`DISABLE_DEMO` 等不敏感的）可在这个文件里加 `[vars]` 段，写法见下方[「wrangler.toml 配置说明」](#wranglertoml-配置说明)。敏感密钥（`ADMIN_KEY`、`JWT_SECRET`）不要写进本文件，见第 4 步。
 
 3. 点 **Commit changes** 提交。**必须先提交，再做第 4 步的接 Git 自动部署。**
 
@@ -160,9 +162,10 @@ npx wrangler d1 create xiaozhou-ledger-web
 npx wrangler secret put ADMIN_KEY
 npx wrangler secret put JWT_SECRET
 
-# 5. 可选变量（也可在 Dashboard 的 Variables 面板填）
+# 5. 可选变量（也可在 Dashboard 的 Variables 面板填；非敏感，建议写进 wrangler.toml [vars]）
 # npx wrangler secret put MAX_ACCOUNTS
 # npx wrangler secret put REGISTER_COOLDOWN_MINUTES
+# npx wrangler secret put DISABLE_DEMO
 
 # 6. 部署（表会在首次请求时自动创建）
 npx wrangler deploy
@@ -200,6 +203,14 @@ run_worker_first = ["/api/*"]                 # 这些路径先走 Worker 代码
 # ⑥ 可观测性：开启后 CF 记录日志/追踪，免费版保留 7 天，方便排查
 [observability]
 enabled = true
+
+# ⑦ 可选变量（非敏感，可写进仓库；敏感密钥 ADMIN_KEY/JWT_SECRET 绝不写这里）
+#    下面给出全部可用变量及「示例默认值」——按需删改，不需要的直接删掉整段 [vars]。
+#    注意：明文 Variable 必须写在这个 [vars] 段里，否则每次 wrangler deploy 会被清掉。
+[vars]
+MAX_ACCOUNTS = "100"                 # 可注册账号总数上限；不设 = 不限
+REGISTER_COOLDOWN_MINUTES = "60"     # 同设备两次注册最小间隔(分钟)；不设 = 不限
+DISABLE_DEMO = "0"                   # "1"=关闭演示账号；不设/"0"=首次部署自动生成测试账号 18000000000/12345678
 ```
 
 **每个字段的作用：**
@@ -215,17 +226,21 @@ enabled = true
 | `[assets].not_found_handling` | 找不到文件时怎么办 | `single-page-application` 让前端路由深链可打开 |
 | `[assets].run_worker_first` | 哪些路径优先走 Worker | `/api/*` 全由后端处理，不走静态 |
 | `[observability].enabled` | 是否记录日志 | 排查问题很有用，建议开 |
+| `[vars].MAX_ACCOUNTS` | 可注册账号总数上限 | 可选；不设 = 不限 |
+| `[vars].REGISTER_COOLDOWN_MINUTES` | 同设备两次注册的最小间隔（分钟） | 可选；不设 = 不限 |
+| `[vars].DISABLE_DEMO` | 设为 `"1"` 关闭演示账号 | 可选；不设/`"0"` = 首次部署自动生成测试账号 |
 
 **敏感变量怎么办（`ADMIN_KEY`、`JWT_SECRET`）：**
 
 - **不要写进本文件**。仓库公开，写进去就等于公开了密钥。
 - 它们在 **CF 后台 → Worker → Settings → Encrypted Secrets** 里设置（见[第 4 步](#第-4-步配置环境变量与密钥)）。加密 Secret 不受 `wrangler deploy` 影响、不进 git。
-- 只有**非敏感**的可选参数（`MAX_ACCOUNTS`、`REGISTER_COOLDOWN_MINUTES`）才建议写进本文件的 `[vars]` 段（随仓库走、部署保留）：
+- 只有**非敏感**的可选参数（`MAX_ACCOUNTS`、`REGISTER_COOLDOWN_MINUTES`、`DISABLE_DEMO`）才建议写进本文件的 `[vars]` 段（随仓库走、部署保留）：
 
   ```toml
   [vars]
   MAX_ACCOUNTS = "100"
   REGISTER_COOLDOWN_MINUTES = "60"
+  DISABLE_DEMO = "0"
   ```
 
 > ⚠️ 记住这个坑：**明文 Variable 若没写进 `wrangler.toml [vars]`，每次 `wrangler deploy`（CI 自动部署）都会把它清掉**；而加密 Secret 不会被清。所以公开仓库 + CI 场景，敏感值一律走加密 Secret。
