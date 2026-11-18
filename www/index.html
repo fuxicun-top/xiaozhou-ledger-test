@@ -838,28 +838,41 @@
             }
           }
 
-          // ---- 往来联系人页：分页限制（每页固定条数，避免一次渲染上百张卡片）----
+          // ---- 往来联系人页：分页限制（按屏幕自适应，避免固定条数在小屏太长/大屏太空）----
           // 压缩 React 的联系人页用 o.map 一次渲染全部联系人，无分页。
           // 这里用 DOM 注入分页条 + 按页隐藏卡片（只改 style.display，不动 React 数据）。
-          var CONTACTS_PER_PAGE = 21;
+          // 每页条数 = 网格实际列数 × CONTACTS_ROWS 行：手机1列7条、平板2列14、桌面3列21，
+          // 各屏幕每页都约 7 行、视觉密度一致；窗口缩放时自动重算。
+          var CONTACTS_ROWS = 7;
           var contactsPage = 1;
+
+          function contactsPerPage(grid) {
+            var cols = 1;
+            try {
+              var tpl = window.getComputedStyle(grid).gridTemplateColumns || "";
+              var parts = tpl.trim().split(/\s+/).filter(Boolean);
+              if (parts.length) cols = parts.length;
+            } catch (e) {}
+            return Math.max(1, cols) * CONTACTS_ROWS;
+          }
 
           function applyContactPagination() {
             var grid = document.querySelector(".contact-grid");
             if (!grid) return;
             var cards = grid.querySelectorAll(".contact-card");
             var total = cards.length;
-            var pages = Math.max(1, Math.ceil(total / CONTACTS_PER_PAGE));
+            var perPage = contactsPerPage(grid);
+            var pages = Math.max(1, Math.ceil(total / perPage));
             if (contactsPage > pages) contactsPage = pages;
-            var start = (contactsPage - 1) * CONTACTS_PER_PAGE;
-            var end = Math.min(start + CONTACTS_PER_PAGE, total);
+            var start = (contactsPage - 1) * perPage;
+            var end = Math.min(start + perPage, total);
             for (var i = 0; i < cards.length; i++) {
               var want = (i >= start && i < end) ? "" : "none";
               if (cards[i].style.display !== want) cards[i].style.display = want; // 只在变化时改，避免 observer 递归
             }
             var pager = document.getElementById("__contactsPager");
             if (pager) {
-              pager.style.display = total > CONTACTS_PER_PAGE ? "flex" : "none";
+              pager.style.display = total > perPage ? "flex" : "none";
               var info = pager.querySelector("[data-role=info]");
               var txt = "第 " + contactsPage + " / " + pages + " 页 · 共 " + total + " 位联系人";
               if (info && info.textContent !== txt) info.textContent = txt;
@@ -891,7 +904,7 @@
                 var b = ev.target && ev.target.closest ? ev.target.closest("button[data-act]") : null;
                 if (!b) return;
                 var total = grid.querySelectorAll(".contact-card").length;
-                var pages = Math.max(1, Math.ceil(total / CONTACTS_PER_PAGE));
+                var pages = Math.max(1, Math.ceil(total / contactsPerPage(grid)));
                 if (b.getAttribute("data-act") === "prev" && contactsPage > 1) contactsPage--;
                 else if (b.getAttribute("data-act") === "next" && contactsPage < pages) contactsPage++;
                 applyContactPagination();
@@ -945,6 +958,16 @@
           var start = function () {
             refresh();
             setInterval(refresh, 1500);
+            // 窗口缩放：联系人页按新列数重算每页条数（节流 120ms）
+            var resizeTimer = null;
+            window.addEventListener("resize", function () {
+              if (!onContactsPage()) return;
+              if (resizeTimer) clearTimeout(resizeTimer);
+              resizeTimer = setTimeout(function () {
+                contactsPage = 1;
+                applyContactPagination();
+              }, 120);
+            });
           };
 
           if (document.readyState === "loading") {
