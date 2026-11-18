@@ -1,4 +1,5 @@
 import { ensureSchema, isDbReady, isNoSchemaError } from './db/schema.js';
+import { ensureDemoData, setDemoHasher } from './demo.js';
 
 /**
  * 人情录 Web 版后端 —— Cloudflare Worker + D1
@@ -305,6 +306,9 @@ async function hashPassword(password, salt) {
   }
   return h;
 }
+
+// 演示数据模块复用同一套密码哈希，避免重复实现
+setDemoHasher(hashPassword);
 
 function b64url(bytes) {
   let s = '';
@@ -2804,8 +2808,21 @@ async function handleImportBackup(request, env, account, origin) {
 /* 路由                                                                */
 /* ------------------------------------------------------------------ */
 
+// 演示数据引导：每个 isolate 只跑一次。先幂等建表（全新部署首请求表可能还没建），
+// 再 seed；ensureDemoData 内部用 admin_settings 标记保证跨 isolate 幂等。
+let demoBooted = false;
+async function bootDemo(env) {
+  if (demoBooted || !env || !env.DB) return;
+  demoBooted = true;
+  try { await ensureSchema(env.DB); } catch { /* 建表失败交给后续自愈 */ }
+  await ensureDemoData(env);
+}
+
 export default {
   async fetch(request, env) {
+    // 演示数据：best-effort，不阻塞主流程；内部全部 try/catch
+    await bootDemo(env);
+
     // 保留一份 body 克隆：body 流只能被消费一次。自愈"缺表/缺列"后重试时，
     // 用克隆体重建 Request，避免"流已消费"导致旧库升级后首次写操作 500、二次才成功。
     let bodyClone = null;
