@@ -769,10 +769,10 @@
           function onStatsPage() { return onPage("stats"); }
           function onContactsPage() { return onPage("contacts"); }
 
-          // 找到统计页的图表区（section.charts-grid），把导出卡片插到它前面
-          function findChartsGrid() {
-            var grids = document.querySelectorAll("section.charts-grid");
-            return grids.length ? grids[0] : null;
+          // 找到统计页收支明细表格的分页条（.table-footer），导出卡片插到它下面
+          function findStatsFooter() {
+            var footers = document.querySelectorAll(".table-footer");
+            return footers.length ? footers[footers.length - 1] : null;
           }
 
           function downloadCsv(kind) {
@@ -810,14 +810,14 @@
               if (existing) existing.remove(); // 离开统计页时移掉
               return;
             }
-            var grid = findChartsGrid();
-            if (!grid) return;
+            var footer = findStatsFooter();
+            if (!footer) return;
             var card = existing;
             if (!card) {
               card = document.createElement("section");
               card.id = "__csvExport";
               card.className = "panel csv-export";
-              card.style.cssText = "margin-bottom:16px;padding:16px 18px";
+              card.style.cssText = "margin-top:16px;padding:16px 18px";
               var html = '<h2 style="margin:0 0 4px;font-size:16px">导出账本</h2>' +
                 '<p style="margin:0 0 12px;font-size:12px;color:#8a8178">把账本下载为 CSV，可用 Excel / WPS 打开继续分析</p>' +
                 '<div style="display:flex;gap:10px;flex-wrap:wrap">';
@@ -832,8 +832,9 @@
                 if (b) downloadCsv(b.getAttribute("data-kind"));
               });
             }
-            if (card.parentNode !== grid.parentNode || card.nextElementSibling !== grid) {
-              grid.parentNode.insertBefore(card, grid);
+            // 插到分页条下面（footer 的下一个兄弟之前）
+            if (card.parentNode !== footer.parentNode || card.previousElementSibling !== footer) {
+              footer.parentNode.insertBefore(card, footer.nextSibling);
             }
           }
 
