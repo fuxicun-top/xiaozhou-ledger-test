@@ -308,6 +308,11 @@
             ".fg-msg.ok{color:#2e7d32}.fg-msg.err{color:#c0392b}" +
             /* 头像：主题浅绿底 + 红字，提升对比度（覆盖压缩 CSS 的灰绿底灰绿字） */
             ".topbar .avatar.small{background:#e7f2ea!important;color:#c0392b!important}" +
+            /* 危险按钮（确认弹窗的确认/删除、头像下拉的退出账号）：浅绿底红字 */
+            ".button.danger,.acct-menu-item.danger{background:#e7f2ea!important;color:#c0392b!important}" +
+            ".button.danger:hover{background:#d8ebe0!important}" +
+            /* 通用提示浮层（demo 账号操作受限时用） */
+            "#__toast{position:fixed;left:50%;top:24px;transform:translateX(-50%);z-index:10002;background:#fff;border:1px solid #e5ddd3;border-left:4px solid #b88273;box-shadow:0 8px 28px rgba(0,0,0,.14);border-radius:10px;padding:12px 18px;font-size:13px;color:#3a342e;max-width:90vw;display:none}" +
             /* 忘记密码弹窗：邮箱与复制按钮同一行，缩小间隔 */
             ".fg-email-row{display:flex;align-items:center;gap:8px;margin:8px 0}" +
             ".fg-email-row .fg-email{margin:0;flex:1;min-width:0}";
@@ -332,6 +337,42 @@
             '<div class="lg-links" id="lg-links"><a id="lg-forgot">忘记密码？</a><a id="lg-unbind" style="display:none;color:#c0392b">退出登录</a></div>' +
             "</div>";
           document.body.appendChild(overlay);
+
+          /* ---------- 通用提示浮层 ---------- */
+          var toastEl = document.createElement("div");
+          toastEl.id = "__toast";
+          document.body.appendChild(toastEl);
+          var toastTimer = null;
+          function showToast(msg) {
+            toastEl.textContent = msg || "";
+            toastEl.style.display = "block";
+            if (toastTimer) clearTimeout(toastTimer);
+            toastTimer = setTimeout(function () { toastEl.style.display = "none"; }, 4000);
+          }
+
+          /* ---------- 拦截更换密钥请求：后端拒绝(demo账号)时弹出提示 ----------
+           * 压缩 React bundle 里 Sb()(rotate) 的 .catch 是空的，吞掉了错误，
+           * 而改端口(Cb)会把 e.message 用 toast 显示。这里补上 rotate 的错误提示。 */
+          (function () {
+            var origFetch = window.fetch;
+            window.fetch = function (input, init) {
+              var url = (typeof input === "string") ? input : (input && input.url ? input.url : "");
+              var isRotate = /\/api\/apikey\/rotate\b/.test(url);
+              if (!isRotate) return origFetch.apply(this, arguments);
+              return origFetch.apply(this, arguments).then(function (res) {
+                if (res && res.status === 403) {
+                  // 克隆响应读取错误文案（原响应仍要还给调用方）
+                  var clone = res.clone ? res.clone() : null;
+                  (clone ? clone.json() : Promise.resolve({})).then(function (d) {
+                    showToast((d && d.error) || "演示账号为公开体验账号，不允许修改账号信息与接口密钥（账本记录可正常增删改）");
+                  }).catch(function () {
+                    showToast("演示账号为公开体验账号，不允许修改账号信息与接口密钥（账本记录可正常增删改）");
+                  });
+                }
+                return res;
+              });
+            };
+          })();
 
           /* ---------- 个人中心面板 ---------- */
           var pfOverlay = document.createElement("div");
