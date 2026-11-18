@@ -288,7 +288,24 @@
             ".pf-btn.danger{background:#c0392b}" +
             ".pf-msg{font-size:12px;margin-top:8px;min-height:16px}" +
             ".pf-msg.err{color:#c0392b}.pf-msg.ok{color:#2e7d32}" +
-            ".pf-close{float:right;cursor:pointer;color:#a89e94;font-size:20px;line-height:1;user-select:none}";
+            ".pf-close{float:right;cursor:pointer;color:#a89e94;font-size:20px;line-height:1;user-select:none}" +
+            /* 忘记密码弹窗 */
+            ".fg-overlay{position:fixed;inset:0;background:rgba(28,24,20,.55);backdrop-filter:blur(2px);z-index:10001;display:flex;align-items:center;justify-content:center;padding:16px}" +
+            ".fg-card{background:#fff;width:100%;max-width:380px;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.18);padding:22px;font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;color:#2b2622;font-size:14px;position:relative}" +
+            ".fg-card h2{margin:0 0 6px;font-size:18px;font-weight:600}" +
+            ".fg-sub{color:#8a8178;font-size:12px;margin:0 0 14px;line-height:1.6}" +
+            ".fg-close{position:absolute;top:14px;right:16px;cursor:pointer;color:#a89e94;font-size:20px;line-height:1;user-select:none}" +
+            ".fg-box{background:#f6f1ea;border-radius:10px;padding:12px;margin-bottom:12px;font-size:13px;line-height:1.6;color:#3a342e}" +
+            ".fg-email{font-family:monospace;font-size:14px;color:#8c6d4f;word-break:break-all;margin:8px 0}" +
+            ".fg-copy{background:#f3efe9;color:#6b625a;border:none;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer}" +
+            ".fg-field{margin-bottom:10px}" +
+            ".fg-field label{display:block;font-size:12px;color:#8a8178;margin-bottom:4px}" +
+            ".fg-field input{width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid #e5ddd3;border-radius:9px;font-size:14px;outline:none}" +
+            ".fg-field input:focus{border-color:#c9a86a}" +
+            ".fg-btn{width:100%;padding:9px 0;background:#8c6d4f;color:#fff;border:none;border-radius:9px;font-size:13px;cursor:pointer}" +
+            ".fg-btn:disabled{opacity:.6;cursor:default}" +
+            ".fg-msg{font-size:12px;margin-top:8px;min-height:16px;line-height:1.5}" +
+            ".fg-msg.ok{color:#2e7d32}.fg-msg.err{color:#c0392b}";
           document.head.appendChild(style);
 
           var overlay = document.createElement("div");
@@ -338,6 +355,28 @@
             "</div>";
           document.body.appendChild(pfOverlay);
 
+          /* ---------- 忘记密码弹窗 ---------- */
+          var fgOverlay = document.createElement("div");
+          fgOverlay.className = "fg-overlay";
+          fgOverlay.style.display = "none";
+          fgOverlay.innerHTML =
+            '<div class="fg-card">' +
+            '<span class="fg-close" id="fg-close">×</span>' +
+            '<h2>忘记密码</h2>' +
+            '<p class="fg-sub">通过以下方式找回账号：</p>' +
+            '<div class="fg-box" id="fg-email-box" style="display:none">' +
+              '<div>请把你的手机号发给管理员邮箱：</div>' +
+              '<div class="fg-email" id="fg-email">—</div>' +
+              '<button class="fg-copy" id="fg-copy">复制邮箱</button>' +
+              '<div style="margin-top:10px;color:#8a8178">或直接向下方提交「密码重置申请」，管理员看到后会为你重置密码。</div>' +
+            '</div>' +
+            '<div class="fg-field"><label>你的手机号</label><input id="fg-phone" inputmode="numeric" maxlength="20" placeholder="注册时用的手机号" autocomplete="off"></div>' +
+            '<div class="fg-field"><label>补充说明（选填，便于管理员回访）</label><input id="fg-note" maxlength="100" placeholder="如：微信 / 邮箱" autocomplete="off"></div>' +
+            '<button class="fg-btn" id="fg-submit">提交重置申请</button>' +
+            '<div class="fg-msg" id="fg-msg"></div>' +
+            "</div>";
+          document.body.appendChild(fgOverlay);
+
           /* ---------- 头像下拉菜单 ---------- */
           var acctMenu = document.createElement("div");
           acctMenu.className = "acct-menu";
@@ -382,8 +421,49 @@
 
           $("#tab-login").onclick = function () { setMode("login"); };
           $("#tab-reg").onclick = function () { setMode("reg"); };
-          $("#lg-forgot").onclick = function () {
-            msg("忘记密码请联系管理员重置（管理员可用 /api/admin/reset-password 处理）。", "warn");
+          /* ---------- 忘记密码弹窗交互 ---------- */
+          var fg$ = function (id) { return fgOverlay.querySelector(id); };
+          function openForgot() {
+            overlay.style.display = "none"; // 关闭登录框，聚焦弹窗
+            fg$("#fg-phone").value = $("#i-phone") ? $("#i-phone").value : "";
+            fg$("#fg-msg").textContent = "";
+            fg$("#fg-msg").className = "fg-msg";
+            fg$("#fg-email-box").style.display = "none";
+            fgOverlay.style.display = "flex";
+            apiCall("/api/account/forgot", "GET")
+              .then(function (d) {
+                if (d.configured && d.contactEmail) {
+                  fg$("#fg-email").textContent = d.contactEmail;
+                  fg$("#fg-email-box").style.display = "";
+                }
+              })
+              .catch(function () { /* 未配置邮箱则只显示重置申请 */ });
+          }
+          $("#lg-forgot").onclick = function () { openForgot(); };
+          fg$("#fg-close").onclick = function () { fgOverlay.style.display = "none"; overlay.style.display = "flex"; };
+          fgOverlay.addEventListener("click", function (ev) { if (ev.target === fgOverlay) fgOverlay.style.display = "none"; });
+          fg$("#fg-copy").onclick = function () {
+            var email = fg$("#fg-email").textContent;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(email).then(function () {
+                fg$("#fg-msg").textContent = "邮箱已复制"; fg$("#fg-msg").className = "fg-msg ok";
+              }).catch(function () { fg$("#fg-msg").textContent = email; fg$("#fg-msg").className = "fg-msg ok"; });
+            } else { fg$("#fg-msg").textContent = email; fg$("#fg-msg").className = "fg-msg ok"; }
+          };
+          fg$("#fg-submit").onclick = function () {
+            var phone = fg$("#fg-phone").value.trim();
+            var note = fg$("#fg-note").value.trim();
+            var m = fg$("#fg-msg");
+            if (!/^\d{5,20}$/.test(phone)) { m.textContent = "请输入正确的手机号"; m.className = "fg-msg err"; return; }
+            var btn = this; btn.disabled = true; m.textContent = ""; m.className = "fg-msg";
+            apiCall("/api/account/forgot/request", "POST", { phone: phone, note: note })
+              .then(function (d) {
+                m.textContent = d.message || "重置申请已提交，管理员会尽快处理。";
+                m.className = "fg-msg ok";
+                fg$("#fg-note").value = "";
+              })
+              .catch(function (e) { m.textContent = e.message || "提交失败，请稍后再试"; m.className = "fg-msg err"; })
+              .finally(function () { btn.disabled = false; });
           };
 
           // 设置页「账户」面板的入口：

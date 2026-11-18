@@ -85,7 +85,11 @@ CREATE TABLE IF NOT EXISTS feedback (
   account TEXT NOT NULL DEFAULT '',
   content TEXT NOT NULL,
   contact TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'suggestion',
+  status TEXT NOT NULL DEFAULT 'new',
+  source TEXT NOT NULL DEFAULT 'web',
+  ref_phone TEXT NOT NULL DEFAULT ''
 );
 
 -- 游客设备（legacy 匿名 guest 账号 dev:<device_id>）

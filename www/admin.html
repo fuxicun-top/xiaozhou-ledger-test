@@ -165,6 +165,13 @@
         <button class="btn sm" id="lgRetentionSave">保存</button>
         <span style="font-size:11px;color:var(--sub)" id="lgRetentionInfo"></span>
       </div>
+      <!-- 联系邮箱（登录页"忘记密码"引导用） -->
+      <div class="inline" style="margin-bottom:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#faf7f2">
+        <span style="font-size:12px;color:var(--sub)">联系邮箱</span>
+        <input id="setEmail" type="email" placeholder="如 admin@example.com（忘记密码时指引用户发信）" autocomplete="off" style="width:300px">
+        <button class="btn sm" id="setEmailSave">保存</button>
+        <span style="font-size:11px;color:var(--sub)">保存后，登录页「忘记密码」会显示该邮箱指引</span>
+      </div>
 
       <!-- 筛选 + 操作 -->
       <div class="inline" style="margin-bottom:12px">
@@ -192,6 +199,31 @@
         </table>
       </div>
       <div class="pager" id="logPager"></div>
+    </div>
+
+    <!-- ⑤ 意见反馈（用户提交的反馈 + 密码重置申请，人工查看/处理） -->
+    <div class="card" id="feedbackCard">
+      <h2>意见反馈</h2>
+      <p class="desc">用户从账本「写反馈」或登录页「忘记密码」提交的反馈与密码重置申请会汇总到这里（按来源区分 web/小程序）。<b>密码重置申请</b>显示目标手机号，点「帮用户重置」设新密码后，把新密码告知用户即可；其余为功能建议/问题反馈，处理完点「标记已处理」。</p>
+
+      <!-- 筛选 -->
+      <div class="inline" style="margin-bottom:12px">
+        <select id="fbStatus"><option value="">全部状态</option><option value="new">待处理</option><option value="done">已处理</option></select>
+        <select id="fbKind"><option value="">全部类型</option><option value="reset">密码重置申请</option><option value="suggestion">建议/反馈</option></select>
+        <button class="btn sm" id="fbQueryBtn">查询</button>
+        <span class="msg" id="fbMsg" style="margin:0"></span>
+      </div>
+
+      <div class="tbl-wrap">
+        <table class="log-table">
+          <thead><tr>
+            <th style="width:130px">时间</th><th style="width:90px">类型</th><th>内容</th>
+            <th style="width:110px">来源</th><th style="width:110px">联系方式</th><th style="width:110px">状态</th><th>操作</th>
+          </tr></thead>
+          <tbody id="fbRows"></tbody>
+        </table>
+      </div>
+      <div class="pager" id="fbPager"></div>
     </div>
 
     <!-- 会话 -->
@@ -740,7 +772,7 @@
   $('lgPurgeBtn').onclick=function(){
     if(!confirm('确定清空全部日志？此操作不可恢复。（保留天数仍由系统每小时自动清理）'))return;
     api('/api/admin/logs/purge','POST',{days:0})
-      .then(function(d){msg('lgPurgeMsg','已清空全部日志（'+d.purged+' 条）','ok');loadLogs(1);loadRetention();})
+      .then(function(d){msg('lgPurgeMsg','已清空全部日志（'+d.purged+' 条）','ok');loadLogs(1);loadEmail();})
       .catch(function(e){msg('lgPurgeMsg',e.message,'err')});
   };
   $('lgExportBtn').onclick=function(){
@@ -760,7 +792,7 @@
   };
 
   /* 日志保留天数（读/写） */
-  function loadRetention(){
+  function loadEmail(){
     api('/api/admin/settings','GET')
       .then(function(d){
         $('lgRetention').value=d.logRetentionDays||30;
@@ -773,12 +805,94 @@
     var days=parseInt($('lgRetention').value,10);
     if(!Number.isFinite(days)||days<1||days>365){toast('保留天数需为 1–365');return;}
     api('/api/admin/settings','POST',{logRetentionDays:days})
-      .then(function(){toast('已保存：日志保留 '+days+' 天');loadRetention();})
+      .then(function(){toast('已保存：日志保留 '+days+' 天');loadEmail();})
       .catch(function(e){toast(e.message)});
   };
 
+  /* 联系邮箱（忘记密码引导） */
+  function loadEmail(){
+    api('/api/admin/settings','GET').then(function(d){
+      $('setEmail').value=d.contactEmail||'';
+      if($('lgRetention').value==='') $('lgRetention').value=d.logRetentionDays||30;
+      var extra=' · 当前 '+d.logCount+' 条';
+      if(d.lastLogPurgeAt) extra+=' · 上次自动清理 '+fmtDate(d.lastLogPurgeAt);
+      $('lgRetentionInfo').textContent=extra;
+    }).catch(function(){});
+  }
+  $('setEmailSave').onclick=function(){
+    var email=$('setEmail').value.trim();
+    if(email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){toast('请填写正确邮箱');return;}
+    api('/api/admin/settings','POST',{contactEmail:email})
+      .then(function(){toast(email?'已保存联系邮箱':'已清空联系邮箱');loadEmail();})
+      .catch(function(e){toast(e.message)});
+  };
+
+  /* ================= ⑤ 意见反馈 ================= */
+  var fbPage=1, fbLimit=20;
+  function fbStatusTag(s){ return s==='done'?'<span class="tag ok">已处理</span>':'<span class="tag err">待处理</span>'; }
+  function fbKindTag(k){ return k==='reset'?'<span class="tag key">密码重置</span>':'<span class="tag">建议/反馈</span>'; }
+  function loadFeedbacks(page){
+    fbPage=page||1;
+    var p=new URLSearchParams({page:String(fbPage),limit:String(fbLimit)});
+    var st=$('fbStatus').value;if(st)p.set('status',st);
+    var kd=$('fbKind').value;if(kd)p.set('kind',kd);
+    api('/api/admin/feedbacks?'+p.toString(),'GET')
+      .then(function(d){
+        var items=d.items||[];
+        var rows=items.map(function(f){
+          var phone=f.ref_phone||'';
+          var acts='';
+          if(f.status==='new'){
+            if(f.kind==='reset'){
+              acts+='<button class="btn sm" onclick="__fbReset(\''+esc(f.id).replace(/'/g,"\\'")+'\',\''+esc(phone).replace(/'/g,"\\'")+'\')">帮用户重置</button> ';
+            }
+            acts+='<button class="btn ghost sm" onclick="__fbDone('+Number(f.id)+')">标记已处理</button>';
+          } else {
+            acts='<span class="msg" style="margin:0;color:var(--sub)">已完成</span>';
+          }
+          var detail=esc(f.content);
+          if(f.contact) detail+=' · 联系方式：'+esc(f.contact);
+          return '<tr>'+
+            '<td class="c-time">'+fmtDate(f.created_at)+'</td>'+
+            '<td>'+fbKindTag(f.kind)+'</td>'+
+            '<td class="c-detail">'+(f.kind==='reset'?'目标手机号：<b style="font-family:monospace">'+esc(phone)+'</b> '+detail:detail)+'</td>'+
+            '<td class="c-detail">'+esc(f.source||'web')+'</td>'+
+            '<td class="c-detail">'+esc(f.contact||'—')+'</td>'+
+            '<td>'+fbStatusTag(f.status)+'</td>'+
+            '<td><div class="actions">'+acts+'</div></td>'+
+            '</tr>';
+        }).join('');
+        $('fbRows').innerHTML=rows||'<tr><td colspan="7" style="text-align:center;color:#8a8178">暂无反馈</td></tr>';
+        var pages=Math.max(1,Math.ceil((d.total||0)/fbLimit));
+        $('fbPager').innerHTML=
+          '<button class="btn ghost sm" '+(fbPage<=1?'disabled':'')+' onclick="__fbPage('+(fbPage-1)+')">上一页</button>'+
+          '<span>'+fbPage+' / '+pages+' · 共 '+(d.total||0)+' 条</span>'+
+          '<button class="btn ghost sm" '+(fbPage>=pages?'disabled':'')+' onclick="__fbPage('+(fbPage+1)+')">下一页</button>';
+      })
+      .catch(function(e){$('fbRows').innerHTML='<tr><td colspan="7" style="text-align:center;color:#c0392b">'+esc(e.message)+'</td></tr>';});
+  }
+  window.__fbPage=function(n){loadFeedbacks(Math.max(1,n));};
+  window.__fbDone=function(id){
+    fetch('/api/admin/feedback/resolve?id='+id,{method:'POST',headers:{'X-Admin-Token':token()}})
+      .then(function(r){if(!r.ok)throw new Error('操作失败');loadFeedbacks(fbPage);toast('已标记处理');})
+      .catch(function(e){toast(e.message)});
+  };
+  window.__fbReset=function(id,phone){
+    var pwd=prompt('为该用户（'+phone+'）设置新密码（8-32 位，之后请通过邮箱/短信告知用户）：');
+    if(!pwd)return;
+    pwd=pwd.trim();
+    if(pwd.length<8||pwd.length>32){toast('密码需为 8-32 位');return;}
+    api('/api/admin/user/update','POST',{phone:phone,password:pwd})
+      .then(function(){
+        toast('已重置 '+phone+' 的密码');
+        loadFeedbacks(fbPage);
+      })
+      .catch(function(e){toast('重置失败：'+e.message);});
+  };
+  $('fbQueryBtn').onclick=function(){loadFeedbacks(1);};
+
   /* 启动：有 token 直接进主界面并验证 */
-  if(token()){ showMain(); loadUsers(); loadLogs(1); loadRetention(); } else { showLogin(); }
+  if(token()){ showMain(); loadUsers(); loadLogs(1); loadEmail(); loadFeedbacks(1); } else { showLogin(); }
 })();
 </script>
 </body>

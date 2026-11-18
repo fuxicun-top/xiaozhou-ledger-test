@@ -154,6 +154,7 @@ function classifyAction(method, path) {
     if (p.startsWith('admin/reset-password')) return 'admin.reset-password';
     if (p.startsWith('admin/purge-account')) return 'admin.purge-account';
     if (p.startsWith('admin/account')) return 'admin.account';
+    if (p.startsWith('admin/feedback')) return 'admin.feedback';
     if (p.startsWith('admin/settings')) return 'admin.settings';
     if (p.startsWith('admin/logs')) return 'admin.logs';
     return 'write';
@@ -1321,25 +1322,36 @@ async function maybeLazyPurgeLogs(env, request) {
   }
 }
 
-/** 查看管理员运行参数（含日志保留天数 + 上次惰性清理时间 + 当前日志条数）。 */
+/** 查看管理员运行参数（含日志保留天数 + 联系邮箱 + 上次惰性清理时间 + 当前日志条数）。 */
 async function handleAdminSettingsGet(env, origin) {
   const days = await logRetentionDays(env);
   const last = await getAdminSetting(env, 'last_log_purge_at', '');
+  const contactEmail = (await getAdminSetting(env, 'contact_email', '')).trim();
   let count = 0;
   try {
     const r = await env.DB.prepare('SELECT COUNT(*) AS n FROM logs').first();
     count = (r && Number(r.n)) || 0;
   } catch {}
-  return jsonRes({ logRetentionDays: days, lastLogPurgeAt: last, logCount: count }, 200, origin);
+  return jsonRes({ logRetentionDays: days, lastLogPurgeAt: last, logCount: count, contactEmail }, 200, origin);
 }
 
-/** 保存管理员运行参数（logRetentionDays 1–365）。 */
+/** 保存管理员运行参数（logRetentionDays 1–365；contactEmail 可选，忘记密码引导邮箱）。 */
 async function handleAdminSettingsSave(request, env, origin) {
   const body = await readJson(request);
   if (!body) return fail('请求内容格式错误', 400, origin);
-  const days = Number.parseInt(asString(body.logRetentionDays, 10), 10);
-  if (!Number.isFinite(days) || days < 1 || days > 365) return fail('保留天数需为 1–365 的正整数', 400, origin);
-  await setAdminSetting(env, 'log_retention_days', String(days));
+  let days;
+  if (body.logRetentionDays !== undefined) {
+    days = Number.parseInt(asString(body.logRetentionDays, 10), 10);
+    if (!Number.isFinite(days) || days < 1 || days > 365) return fail('保留天数需为 1–365 的正整数', 400, origin);
+    await setAdminSetting(env, 'log_retention_days', String(days));
+  } else {
+    days = await logRetentionDays(env);
+  }
+  if (body.contactEmail !== undefined) {
+    const email = asString(body.contactEmail, 120).trim();
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail('请填写正确的邮箱地址', 400, origin);
+    await setAdminSetting(env, 'contact_email', email);
+  }
   return jsonRes({ logRetentionDays: days, saved: true }, 200, origin);
 }
 
@@ -2447,11 +2459,77 @@ async function handleFeedback(request, env, account, origin) {
   const content = asString(body.content, 1000).trim();
   const contact = asString(body.contact, 200).trim();
   if (!content) return fail('反馈内容不能为空', 400, origin);
+  // 来源区分（web / miniapp，小程序端可传 source）；类型默认建议，密码重置申请走独立的公开接口
+  const source = asString(body.source, 16).trim() || 'web';
 
-  await env.DB.prepare('INSERT INTO feedback (account, content, contact, created_at) VALUES (?, ?, ?, ?)')
-    .bind(account, content, contact, nowIso())
+  await env.DB.prepare(
+    `INSERT INTO feedback (account, content, contact, created_at, kind, status, source)
+     VALUES (?, ?, ?, ?, 'suggestion', 'new', ?)`
+  )
+    .bind(account, content, contact, nowIso(), source)
     .run();
   return jsonRes({ ok: true }, 200, origin);
+}
+
+/** 忘记密码：公开接口（无需登录）。返回管理员设置的联系邮箱（未设置则引导到管理后台）。 */
+async function handleForgotInfo(env, origin) {
+  const email = (await getAdminSetting(env, 'contact_email', '')).trim();
+  return jsonRes({ contactEmail: email, configured: Boolean(email) }, 200, origin);
+}
+
+/** 忘记密码：提交密码重置申请（公开，无需登录）。只记录目标手机号，不存明文新密码；
+ *  由管理员在后台看到申请后，用 /api/admin/reset-password 帮用户设新密码，再告知用户。 */
+async function handleForgotRequest(request, env, origin) {
+  const body = await readJson(request);
+  if (!body) return fail('请求内容格式错误', 400, origin);
+  const phone = asString(body.phone, 20).trim();
+  const note = asString(body.note, 200).trim();
+  if (!validPhone(phone)) return fail('请输入正确的手机号', 400, origin);
+  const user = await env.DB.prepare('SELECT 1 AS x FROM users WHERE phone = ?').bind(phone).first();
+  // 不存在也返回成功（避免被探测哪些手机号已注册），统一口径
+  await env.DB.prepare(
+    `INSERT INTO feedback (account, content, contact, created_at, kind, status, source, ref_phone)
+     VALUES (?, ?, ?, ?, 'reset', 'new', 'web', ?)`
+  )
+    .bind('user:' + phone, note ? `密码重置申请：${note}` : '密码重置申请', '', nowIso(), phone)
+    .run();
+  return jsonRes({ ok: true, exists: Boolean(user), message: '重置申请已提交，管理员会尽快处理并通过你的注册手机或联系邮箱联系你。' }, 200, origin);
+}
+
+/* ---------- 管理员：意见反馈查看 / 标记已处理 ---------- */
+
+/** 管理员查看全部反馈（分页 + 按 kind/status 过滤）。 */
+async function handleAdminFeedbacks(request, env, origin) {
+  const url = new URL(request.url);
+  let limit = Number.parseInt(url.searchParams.get('limit') || '50', 10);
+  if (!Number.isFinite(limit) || limit < 1) limit = 50;
+  limit = Math.min(limit, 500);
+  let page = Number.parseInt(url.searchParams.get('page') || '1', 10);
+  if (!Number.isFinite(page) || page < 1) page = 1;
+  const kind = asString(url.searchParams.get('kind'), 16).trim();
+  const status = asString(url.searchParams.get('status'), 16).trim();
+  const clauses = [];
+  const params = [];
+  if (kind) { clauses.push('kind = ?'); params.push(kind); }
+  if (status) { clauses.push('status = ?'); params.push(status); }
+  const where = clauses.length ? ' WHERE ' + clauses.join(' AND ') : '';
+  const totalRes = await env.DB.prepare(`SELECT COUNT(*) AS n FROM feedback${where}`).bind(...params).first();
+  const total = (totalRes && Number(totalRes.n)) || 0;
+  const off = (page - 1) * limit;
+  const rowsRes = await env.DB.prepare(
+    `SELECT id, account, content, contact, created_at, kind, status, source, ref_phone
+     FROM feedback${where} ORDER BY (status = 'new') DESC, id DESC LIMIT ? OFFSET ?`
+  ).bind(...params, limit, off).all();
+  return jsonRes({ page, limit, total, items: (rowsRes.results || []).map((r) => ({ ...r, isReset: r.kind === 'reset' })) }, 200, origin);
+}
+
+/** 标记某条反馈为已处理。 */
+async function handleAdminFeedbackResolve(request, env, origin) {
+  const url = new URL(request.url);
+  const id = Number.parseInt(url.searchParams.get('id') || '0', 10);
+  if (!Number.isFinite(id) || id < 1) return fail('缺少反馈 id', 400, origin);
+  await env.DB.prepare(`UPDATE feedback SET status = 'done' WHERE id = ?`).bind(id).run();
+  return jsonRes({ id, resolved: true }, 200, origin);
 }
 
 async function handleMembership(origin) {
@@ -2728,16 +2806,26 @@ async function handleImportBackup(request, env, account, origin) {
 
 export default {
   async fetch(request, env) {
+    // 保留一份 body 克隆：body 流只能被消费一次。自愈"缺表/缺列"后重试时，
+    // 用克隆体重建 Request，避免"流已消费"导致旧库升级后首次写操作 500、二次才成功。
+    let bodyClone = null;
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      try { bodyClone = request.clone(); } catch { bodyClone = null; }
+    }
     try {
       return await apiRequest(request, env);
     } catch (e) {
-      // 兜底自愈：请求触发"数据库缺表/缺结构"（D1 error code 1101，常见于
-      // 全新部署尚未建表、或旧库升级）时，自动执行 ensureSchema 并重试一次。
-      // 这样即使部署钩子不可用/未触发，站点也能自动把表建好，无需进控制台。
+      // 兜底自愈：请求触发"数据库缺表/缺列/缺索引"（全新部署或旧库升级）时，
+      // 自动执行 ensureSchema 补建并重试一次，无需进控制台。
       if (isNoSchemaError(e) && env.DB) {
         try {
           await ensureSchema(env.DB);
-          return await apiRequest(request, env);
+          let retryReq = request;
+          if (bodyClone) {
+            const t = await bodyClone.text();
+            retryReq = new Request(request, { method: request.method, headers: request.headers, body: t });
+          }
+          return await apiRequest(retryReq, env);
         } catch (e2) {
           console.error('auto-ensureSchema retry failed', e2 && e2.stack ? e2.stack : e2);
         }
@@ -2817,6 +2905,15 @@ async function apiRequest(request, env) {
       if (path === '/api/account/check' && request.method === 'GET') {
         const res = await handleAccountCheck(request, env, origin);
         await recordLog(env, { actor: 'anonymous', action: 'read', target: '', method: 'GET', path, status: res.status, ok: res.status < 400, ip, detail: '' }, request);
+        return res;
+      }
+      // ---- 忘记密码（公开，无需登录）----
+      if (path === '/api/account/forgot' && request.method === 'GET') {
+        return handleForgotInfo(env, origin);
+      }
+      if (path === '/api/account/forgot/request' && request.method === 'POST') {
+        const res = await handleForgotRequest(request, env, origin);
+        await recordLog(env, { actor: 'anonymous', action: 'feedback', target: '', method: 'POST', path, status: res.status, ok: res.status < 400, ip, detail: '提交密码重置申请' }, request);
         return res;
       }
       // ---- 管理后台（账号密码登录，独立于普通用户体系）----
@@ -2918,6 +3015,13 @@ async function apiRequest(request, env) {
         }
         if (path === '/api/admin/settings' && request.method === 'POST') {
           return adminLog(await handleAdminSettingsSave(request, env, origin), '保存运行参数');
+        }
+        // ---- 意见反馈（查看 / 标记已处理）----
+        if (path === '/api/admin/feedbacks' && request.method === 'GET') {
+          return adminLog(handleAdminFeedbacks(request, env, origin), '查反馈');
+        }
+        if (path === '/api/admin/feedback/resolve' && request.method === 'POST') {
+          return adminLog(handleAdminFeedbackResolve(request, env, origin), '标记反馈已处理');
         }
       }
 

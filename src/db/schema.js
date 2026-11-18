@@ -80,7 +80,11 @@ const DDL = [
     account TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL,
     contact TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'suggestion',
+    status TEXT NOT NULL DEFAULT 'new',
+    source TEXT NOT NULL DEFAULT 'web',
+    ref_phone TEXT NOT NULL DEFAULT ''
   )`,
 
   `CREATE TABLE IF NOT EXISTS devices (
@@ -138,6 +142,11 @@ const LEGACY_MIGRATIONS = [
   `ALTER TABLE gifts ADD COLUMN account TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE feedback ADD COLUMN account TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE logs ADD COLUMN ua TEXT NOT NULL DEFAULT ''`,
+  // 反馈闭环：区分类型（建议/密码重置申请）、处理状态、来源（web/miniapp）、重置申请携带的手机号与新密码
+  `ALTER TABLE feedback ADD COLUMN kind TEXT NOT NULL DEFAULT 'suggestion'`,
+  `ALTER TABLE feedback ADD COLUMN status TEXT NOT NULL DEFAULT 'new'`,
+  `ALTER TABLE feedback ADD COLUMN source TEXT NOT NULL DEFAULT 'web'`,
+  `ALTER TABLE feedback ADD COLUMN ref_phone TEXT NOT NULL DEFAULT ''`,
 ];
 
 /**
@@ -167,9 +176,9 @@ export async function isDbReady(db) {
   }
 }
 
-/** 判断错误是否为"数据库缺表/缺结构"（D1 error code 1101，全新部署常见）。 */
+/** 判断错误是否为"数据库缺表/缺列/缺索引"（触发 ensureSchema 自愈重建/补列）。 */
 export function isNoSchemaError(e) {
   if (!e) return false;
   if (String(e.code) === '1101') return true;
-  return /no such table|no such index|1101/i.test(e.message || '');
+  return /no such table|no such index|no such column|1101/i.test(e.message || '');
 }
