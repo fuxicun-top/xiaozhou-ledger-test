@@ -1,0 +1,5 @@
+# 统一贡献者身份：早期 29 条提交误用了 fuxicun-top <admin@fuxicun.top> 署名，
+# 实际都是本仓库 owner（zhoudedi）的开发记录。映射后 GitHub Contributors
+# 会把它们归到 @zhoudedi，页面只显示一个贡献者账号。
+# 语法：正确姓名 <正确邮箱>  提交中的姓名 <提交中的邮箱>
+zhoudedi <64512474+zhoudedi@users.noreply.github.com> fuxicun-top <admin@fuxicun.top>
