@@ -168,6 +168,32 @@ export async function ensureSchema(db) {
       /* 列已存在等错误：跳过 */
     }
   }
+  await repairLegacyFeedback(db);
+}
+
+/**
+ * 修复远古库遗留的 feedback 旧结构：早期版本曾用 device_id TEXT NOT NULL（无默认值），
+ * 而当前代码 INSERT 不带该列 → "NOT NULL constraint failed: feedback.device_id" → 500。
+ * 检测到该列存在时，重建为当前结构并迁移可识别字段（正常库不含此列，零影响）。
+ */
+async function repairLegacyFeedback(db) {
+  try {
+    const info = await db.prepare('PRAGMA table_info(feedback)').all();
+    const cols = (info.results || []).map((r) => r.name);
+    if (!cols.includes('device_id')) return;
+    // 仅保留目标结构存在的列；数据为空/极少，重建安全
+    const keep = ['id', 'account', 'content', 'contact', 'created_at', 'kind', 'status', 'source', 'ref_phone'].filter((c) => cols.includes(c));
+    const colList = keep.join(', ');
+    const feedbackDDL = DDL.find((s) => /CREATE TABLE IF NOT EXISTS feedback \(/i.test(s));
+    await db.prepare('ALTER TABLE feedback RENAME TO feedback_legacy').run();
+    await db.prepare(feedbackDDL.trim()).run();
+    if (colList) {
+      await db.prepare(`INSERT INTO feedback (${colList}) SELECT ${colList} FROM feedback_legacy`).run();
+    }
+    await db.prepare('DROP TABLE feedback_legacy').run();
+  } catch {
+    /* 探测/重建失败不阻断：正常库不会走到这里 */
+  }
 }
 
 /** 数据库是否已具备核心表（用新体系 users 表探测；旧库无此表时为 false）。 */
