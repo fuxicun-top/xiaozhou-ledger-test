@@ -357,7 +357,8 @@
             var origFetch = window.fetch;
             window.fetch = function (input, init) {
               var url = (typeof input === "string") ? input : (input && input.url ? input.url : "");
-              var isRotate = /\/api\/apikey\/rotate\b/.test(url);
+              // React 用相对路径 api/apikey/rotate 请求，也可能带前导斜杠，两种都匹配
+              var isRotate = /(\/|^)api\/apikey\/rotate\b/.test(url);
               if (!isRotate) return origFetch.apply(this, arguments);
               return origFetch.apply(this, arguments).then(function (res) {
                 if (res && res.status === 403) {
