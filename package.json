@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "build": "node -e \"console.log('前端已预编译，无需构建')\"",
     "deploy": "wrangler deploy",
     "db:init": "wrangler d1 execute xiaozhou-ledger-web --remote --file=schema.sql"
   },

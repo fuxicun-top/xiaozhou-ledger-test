@@ -122,16 +122,16 @@ Worker → **Settings → Builds → Connect to Git**，按顺序填：
 | 存储库 | 选你 **fork 的仓库**（如 `xiaozhou-ledger-test`） |
 | 分支 | `main` |
 
-**② 构建配置（关键，别用默认值！）**
+**② 构建配置**
 
-CF 后台会自动带出两个默认命令，但本项目的情况如下，请照改：
+CF 后台会自动带出两个默认命令，本项目的情况如下：
 
-| 界面项 | CF 默认值 | 本项目要改成 | 为什么 |
+| 界面项 | CF 默认值 | 本项目怎么处理 | 说明 |
 | --- | --- | --- | --- |
-| 构建命令（Build command，可选） | `npm run build` | **留空**（或填 `npm install`） | 本项目的 `package.json` **没有 `build` 脚本**，前端是预编译好的静态文件（`www/`），根本不需要构建。保持默认会报 `npm error Missing script: "build"` 导致构建失败。 |
+| 构建命令（Build command，可选） | `npm run build` | **建议留空**；保持默认也没问题 | 前端是预编译好的静态文件（`www/`），无需真正构建。本项目 `package.json` 已内置一个空 `build` 脚本，**即使你忘记留空、保持 CF 默认的 `npm run build`，也会正常通过**（只是打印一句提示，不做任何事）。 |
 | 部署命令（Deploy command） | `npx wrangler deploy` | **保持不变** | 这就是部署 Worker 的正确命令。 |
 
-> 构建命令那栏直接**清空**最省事——`npm install` 其实也不强制（CD 环境会自动装依赖），但填了也不会错。
+> 构建命令那栏**留空**最干净；万一你没注意、保留了默认的 `npm run build` 也完全没问题——已做兼容，不会报错。
 >
 > ⚠️ 「启用预览（Enable preview deployments）」默认开启，它会用 `npx wrangler preview`（CF 默认值）为 PR 生成预览部署。本项目不需要预览环境，可**关掉**避免预览任务因该命令报错；开着也不影响 `main` 分支的正式部署。
 
