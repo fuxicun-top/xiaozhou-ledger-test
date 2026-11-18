@@ -757,15 +757,17 @@
             { type: "people", label: "往来汇总" },
           ];
 
-          function onStatsPage() {
+          function onPage(name) {
             try {
               // 前端是 hash 路由（URL 形如 /#/stats），必须读 location.hash；
               // 同时兼容 history 模式的 pathname，两种都支持。
               var hash = String(location.hash || "").replace(/^#/, "").split("?")[0].replace(/\/+$/, "");
               var path = String(location.pathname || "").replace(/\/+$/, "");
-              return hash === "/stats" || (!location.hash && path === "/stats");
+              return hash === "/" + name || (!location.hash && path === "/" + name);
             } catch (e) { return false; }
           }
+          function onStatsPage() { return onPage("stats"); }
+          function onContactsPage() { return onPage("contacts"); }
 
           // 找到统计页的图表区（section.charts-grid），把导出卡片插到它前面
           function findChartsGrid() {
@@ -835,6 +837,70 @@
             }
           }
 
+          // ---- 往来联系人页：分页限制（每页固定条数，避免一次渲染上百张卡片）----
+          // 压缩 React 的联系人页用 o.map 一次渲染全部联系人，无分页。
+          // 这里用 DOM 注入分页条 + 按页隐藏卡片（只改 style.display，不动 React 数据）。
+          var CONTACTS_PER_PAGE = 12;
+          var contactsPage = 1;
+
+          function applyContactPagination() {
+            var grid = document.querySelector(".contact-grid");
+            if (!grid) return;
+            var cards = grid.querySelectorAll(".contact-card");
+            var total = cards.length;
+            var pages = Math.max(1, Math.ceil(total / CONTACTS_PER_PAGE));
+            if (contactsPage > pages) contactsPage = pages;
+            var start = (contactsPage - 1) * CONTACTS_PER_PAGE;
+            var end = Math.min(start + CONTACTS_PER_PAGE, total);
+            for (var i = 0; i < cards.length; i++) {
+              var want = (i >= start && i < end) ? "" : "none";
+              if (cards[i].style.display !== want) cards[i].style.display = want; // 只在变化时改，避免 observer 递归
+            }
+            var pager = document.getElementById("__contactsPager");
+            if (pager) {
+              pager.style.display = total > CONTACTS_PER_PAGE ? "flex" : "none";
+              var info = pager.querySelector("[data-role=info]");
+              var txt = "第 " + contactsPage + " / " + pages + " 页 · 共 " + total + " 位联系人";
+              if (info && info.textContent !== txt) info.textContent = txt;
+              var prev = pager.querySelector("[data-act=prev]");
+              var next = pager.querySelector("[data-act=next]");
+              if (prev) prev.disabled = contactsPage <= 1;
+              if (next) next.disabled = contactsPage >= pages;
+            }
+          }
+
+          function mountContactsPagination() {
+            var existing = document.getElementById("__contactsPager");
+            if (!onContactsPage()) {
+              if (existing) existing.remove();
+              contactsPage = 1;
+              return;
+            }
+            var grid = document.querySelector(".contact-grid");
+            if (!grid) return;
+            if (!existing) {
+              var pager = document.createElement("div");
+              pager.id = "__contactsPager";
+              pager.style.cssText = "display:none;align-items:center;justify-content:center;gap:14px;padding:12px 0 4px;font-size:13px;color:#6b625a";
+              pager.innerHTML =
+                '<button type="button" data-act="prev" style="padding:6px 14px;border:1px solid #e5ddd3;background:#fff;border-radius:8px;cursor:pointer;color:#6b625a">上一页</button>' +
+                '<span data-role="info"></span>' +
+                '<button type="button" data-act="next" style="padding:6px 14px;border:1px solid #e5ddd3;background:#fff;border-radius:8px;cursor:pointer;color:#6b625a">下一页</button>';
+              pager.addEventListener("click", function (ev) {
+                var b = ev.target && ev.target.closest ? ev.target.closest("button[data-act]") : null;
+                if (!b) return;
+                var total = grid.querySelectorAll(".contact-card").length;
+                var pages = Math.max(1, Math.ceil(total / CONTACTS_PER_PAGE));
+                if (b.getAttribute("data-act") === "prev" && contactsPage > 1) contactsPage--;
+                else if (b.getAttribute("data-act") === "next" && contactsPage < pages) contactsPage++;
+                applyContactPagination();
+              });
+              // 插到联系人网格前面
+              grid.parentNode.insertBefore(pager, grid);
+            }
+            applyContactPagination();
+          }
+
           // 右上角头像（.avatar.small）：未登录点开登录注册，已登录点开账号下拉菜单。
           // 用事件委托 + 标记，避免 React 重重建 DOM 导致监听器丢失。
           function bindAvatar() {
@@ -864,6 +930,7 @@
               mountButton();
               bindAvatar();
               mountCsvExport();
+              mountContactsPagination();
             } finally {
               if (mo) mo.observe(appRoot, { childList: true, subtree: true });
             }
