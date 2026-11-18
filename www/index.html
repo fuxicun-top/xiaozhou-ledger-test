@@ -466,21 +466,20 @@
               .finally(function () { btn.disabled = false; });
           };
 
-          // 设置页「账户」面板的入口：
-          // 未登录 → 打开注册；已登录 → 打开账号管理面板（切换 / 退出）
+          // 设置页「账户」面板的入口（头像、个人中心未登录时也走这里）：
+          // 未登录 → 默认打开登录页（想注册可点「注册」tab）；已登录 → 切换 / 退出
           var openAccountPanel = function () {
             var hasLogin = Boolean(getAuthJwt());
             if (hasLogin) {
-              setMode("login");
               $("#i-phone").value = ls().getItem("ledger_phone") || "";
               $("#i-password").value = "";
-              $("#i-password").placeholder = "登录密码";
               $("#lg-unbind").style.display = "";
             } else {
-              setMode("reg");
               $("#lg-unbind").style.display = "none";
             }
-            $("#lg-go").textContent = hasLogin ? "登录 / 切换账号" : "注册并登录";
+            // 两种状态都停留在登录页；setMode 会把按钮文字设为「登录」
+            setMode("login");
+            if (hasLogin) $("#lg-go").textContent = "登录 / 切换账号";
             msg("");
             overlay.style.display = "flex";
           };
