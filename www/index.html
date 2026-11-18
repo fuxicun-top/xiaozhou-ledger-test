@@ -841,7 +841,7 @@
           // ---- 往来联系人页：分页限制（每页固定条数，避免一次渲染上百张卡片）----
           // 压缩 React 的联系人页用 o.map 一次渲染全部联系人，无分页。
           // 这里用 DOM 注入分页条 + 按页隐藏卡片（只改 style.display，不动 React 数据）。
-          var CONTACTS_PER_PAGE = 15;
+          var CONTACTS_PER_PAGE = 21;
           var contactsPage = 1;
 
           function applyContactPagination() {
