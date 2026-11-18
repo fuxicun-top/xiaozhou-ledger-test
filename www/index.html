@@ -758,8 +758,13 @@
           ];
 
           function onStatsPage() {
-            try { return location.pathname.replace(/\/+$/, "") === "/stats"; }
-            catch (e) { return false; }
+            try {
+              // 前端是 hash 路由（URL 形如 /#/stats），必须读 location.hash；
+              // 同时兼容 history 模式的 pathname，两种都支持。
+              var hash = String(location.hash || "").replace(/^#/, "").split("?")[0].replace(/\/+$/, "");
+              var path = String(location.pathname || "").replace(/\/+$/, "");
+              return hash === "/stats" || (!location.hash && path === "/stats");
+            } catch (e) { return false; }
           }
 
           // 找到统计页的图表区（section.charts-grid），把导出卡片插到它前面
