@@ -305,7 +305,12 @@
             ".fg-btn{width:100%;padding:9px 0;background:#8c6d4f;color:#fff;border:none;border-radius:9px;font-size:13px;cursor:pointer}" +
             ".fg-btn:disabled{opacity:.6;cursor:default}" +
             ".fg-msg{font-size:12px;margin-top:8px;min-height:16px;line-height:1.5}" +
-            ".fg-msg.ok{color:#2e7d32}.fg-msg.err{color:#c0392b}";
+            ".fg-msg.ok{color:#2e7d32}.fg-msg.err{color:#c0392b}" +
+            /* 头像：主题浅绿底 + 红字，提升对比度（覆盖压缩 CSS 的灰绿底灰绿字） */
+            ".topbar .avatar.small{background:#e7f2ea!important;color:#c0392b!important}" +
+            /* 忘记密码弹窗：邮箱与复制按钮同一行，缩小间隔 */
+            ".fg-email-row{display:flex;align-items:center;gap:8px;margin:8px 0}" +
+            ".fg-email-row .fg-email{margin:0;flex:1;min-width:0}";
           document.head.appendChild(style);
 
           var overlay = document.createElement("div");
@@ -366,8 +371,8 @@
             '<p class="fg-sub">通过以下方式找回账号：</p>' +
             '<div class="fg-box" id="fg-email-box" style="display:none">' +
               '<div>请把你的手机号发给管理员邮箱：</div>' +
-              '<div class="fg-email" id="fg-email">—</div>' +
-              '<button class="fg-copy" id="fg-copy">复制邮箱</button>' +
+              '<div class="fg-email-row"><div class="fg-email" id="fg-email">—</div>' +
+              '<button class="fg-copy" id="fg-copy">复制邮箱</button></div>' +
               '<div style="margin-top:10px;color:#8a8178">或直接向下方提交「密码重置申请」，管理员看到后会为你重置密码。</div>' +
             '</div>' +
             '<div class="fg-field"><label>你的手机号</label><input id="fg-phone" inputmode="numeric" maxlength="20" placeholder="注册时用的手机号" autocomplete="off"></div>' +

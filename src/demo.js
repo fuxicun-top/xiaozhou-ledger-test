@@ -15,6 +15,9 @@
 const DEMO_PHONE = '18000000000';
 const DEMO_PASSWORD = '12345678';
 const DEMO_NAME = '演示账号';
+// 演示账号固定的小程序接口密钥与端口：对外展示用，后端禁止该账号修改/轮换
+const DEMO_API_KEY = 'gl_8c2ed1903d3105ba7bc44d3890ea3aec76e85d010592194a';
+const DEMO_API_PORT = 443;
 
 // 事由（与 src/index.js 的 EVENT_TYPES / 前端 EVENT_TYPES 一致）
 const EVENT_TYPES = ['wedding', 'baby', 'birthday', 'housewarming', 'graduation', 'funeral', 'other'];
@@ -51,6 +54,16 @@ function randomDate(used) {
 let hashPasswordFn = null;
 export function setDemoHasher(fn) { hashPasswordFn = fn; }
 
+/** 确保演示账号只保留固定接口密钥（key + port 443），清掉旧随机 key。幂等。 */
+export async function ensureDemoApiKey(env) {
+  await env.DB.prepare('DELETE FROM account_keys WHERE phone = ? AND key <> ?')
+    .bind(DEMO_PHONE, DEMO_API_KEY).run();
+  await env.DB.prepare(
+    `INSERT INTO account_keys (key, phone, port, created_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET phone = excluded.phone, port = excluded.port`
+  ).bind(DEMO_API_KEY, DEMO_PHONE, DEMO_API_PORT, new Date().toISOString()).run();
+}
+
 /**
  * 确保演示数据存在（幂等、best-effort）。
  * @param {{DB: any, DISABLE_DEMO?: string}} env
@@ -77,6 +90,8 @@ export async function ensureDemoData(env) {
     // 已有测试账号则直接完成（幂等，避免重装/重启后重复写入演示数据）
     const exists = await env.DB.prepare('SELECT 1 AS x FROM users WHERE phone = ?').bind(DEMO_PHONE).first();
     if (exists) {
+      // 账号已在：补偿固定接口密钥（老版本 seed 没建 key 或轮换过），确保只留固定这一条
+      await ensureDemoApiKey(env);
       await env.DB.prepare(`UPDATE admin_settings SET value = 'done' WHERE key = 'demo_seeded'`).run();
       return;
     }
@@ -91,6 +106,7 @@ export async function ensureDemoData(env) {
       `INSERT INTO users (phone, name, password_hash, created_at) VALUES (?, ?, ?, ?)`
     ).bind(DEMO_PHONE, DEMO_NAME, passwordHash, now).run();
     await env.DB.prepare('INSERT OR IGNORE INTO account_settings (account) VALUES (?)').bind(account).run();
+    await ensureDemoApiKey(env);
 
     // 事由：每种 2 个活动（同类型日期不同）
     const events = [];
