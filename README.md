@@ -30,7 +30,7 @@
 - **手机号 + 密码账号**：注册后 7 天免登录，任意设备登录同一手机号看到同一本账。密码以加盐哈希存在你自己的 D1，服务端不存明文。
 - **游客模式**：不注册也能记，数据存在本机浏览器；注册时自动并入账号。
 - **微信小程序 / 第三方客户端**：设置页生成接口密钥（`X-Api-Key`），与网页端读写同一本账。
-- **统计分析**：收支总览、往来联系人、年度报告、CSV 导出。
+- **统计分析**：收支总览、往来联系人、年度报告、账本导出（Excel 表格 `.xls`，兼容 CSV）。
 - **AI 记账**：配置自己的大模型 API Key，用自然语言批量记一笔（支持浏览器直连兜底应对限流）。
 - **个人中心**：头像菜单里改昵称、改密码、换绑定手机号（账本数据自动迁移）。
 - **意见反馈 & 忘记密码**：账本内「写反馈」直达开发者；登录页「忘记密码」可一键发信给管理员邮箱、或提交**站内重置申请**（无需登录），由管理员在后台处理。
@@ -112,11 +112,32 @@
 
 ### 第 5 步：接 GitHub 自动部署
 
-Worker → **Settings → Builds → Connect to Git**：
+Worker → **Settings → Builds → Connect to Git**，按顺序填：
 
-1. 授权 GitHub，选择你 **fork 的仓库**、分支 `main`。
-2. 构建命令保持默认（`npm install && npx wrangler deploy`），保存。
-3. 第一次会自动构建部署；以后你往仓库 push 任何改动，都会自动重新部署。
+**① 连接到仓库**
+
+| 界面项 | 填什么 |
+| --- | --- |
+| Git 帐户 | 选你刚才授权 GitHub 时登录的账号 |
+| 存储库 | 选你 **fork 的仓库**（如 `xiaozhou-ledger-test`） |
+| 分支 | `main` |
+
+**② 构建配置**
+
+CF 后台会自动带出两个默认命令，本项目的情况如下：
+
+| 界面项 | CF 默认值 | 本项目怎么处理 | 说明 |
+| --- | --- | --- | --- |
+| 构建命令（Build command，可选） | `npm run build` | **建议留空**；保持默认也没问题 | 前端是预编译好的静态文件（`www/`），无需真正构建。本项目 `package.json` 已内置一个空 `build` 脚本，**即使你忘记留空、保持 CF 默认的 `npm run build`，也会正常通过**（只是打印一句提示，不做任何事）。 |
+| 部署命令（Deploy command） | `npx wrangler deploy` | **保持不变** | 这就是部署 Worker 的正确命令。 |
+
+> 构建命令那栏**留空**最干净；万一你没注意、保留了默认的 `npm run build` 也完全没问题——已做兼容，不会报错。
+>
+> ⚠️ 「启用预览（Enable preview deployments）」默认开启，它会用 `npx wrangler preview`（CF 默认值）为 PR 生成预览部署。本项目不需要预览环境，可**关掉**避免预览任务因该命令报错；开着也不影响 `main` 分支的正式部署。
+
+**③ 保存并验证**
+
+点保存后 CF 会立即触发第一次构建部署（几分钟）。以后你往 `main` push 任何改动，都会自动重新部署。
 
 > 不想接 Git？也可以本地装 Node 后手动部署，见下面「命令行部署」。
 
@@ -327,7 +348,7 @@ curl -X POST https://你的域名/api/admin/purge-account \
 | GET | `/api/overview` | 总览统计 |
 | GET | `/api/people` | 联系人汇总 |
 | GET | `/api/report/yearly?year=` | 年度报告 |
-| GET | `/api/export/csv?type=` | CSV 导出 |
+| GET | `/api/export/csv?type=&format=` | 账本导出：`type=gifts/events/people`；`format=xls` 导出 Excel 表格（`.xls`，SpreadsheetML，网页「导出账本」即用此项），默认 `format=csv` 导出 CSV（向后兼容） |
 | GET/POST | `/api/ai/config`、`POST /api/ai/parse` | AI 配置 / 解析（自带模型 Key） |
 | GET/POST | `/api/export/backup`、`/api/import/backup` | 用户级全栈备份（明文，无需密钥） |
 | POST | `/api/feedback` | 意见反馈（账本「写反馈」，存 D1） |

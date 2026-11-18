@@ -1,5 +1,5 @@
 import { ensureSchema, isDbReady, isNoSchemaError } from './db/schema.js';
-import { ensureDemoData, setDemoHasher } from './demo.js';
+import { ensureDemoData, ensureDemoApiKey, setDemoHasher } from './demo.js';
 
 /**
  * 人情录 Web 版后端 —— Cloudflare Worker + D1
@@ -40,6 +40,15 @@ const METHOD_LABELS = {
 
 const RELATIONS = new Set(['朋友', '亲戚', '同事', '同学', '邻居', '其他']);
 const METHODS = new Set(['cash', 'wechat', 'alipay', 'other']);
+
+/* 演示账号保护：部署后自动生成的体验账号（18000000000）供所有人查看效果。
+ * 允许增删改账本数据（活动/礼金），但禁止修改账号身份信息（手机号/密码/昵称）、
+ * 禁止改接口密钥与端口，防止被人占用后其他人无法登录体验。 */
+const DEMO_PHONE = '18000000000';
+function isDemoPhone(phone) {
+  return String(phone || '') === DEMO_PHONE;
+}
+const DEMO_LOCKED_MSG = '演示账号为公开体验账号，不允许修改账号信息与接口密钥（账本记录可正常增删改）';
 
 /* 跨域策略：默认反射请求方 Origin。
  * 本 API 的认证全部基于自定义请求头/令牌（X-Ledger-Phone/Pin、X-Api-Key、X-Ledger-Token），
@@ -766,6 +775,8 @@ async function handleAdminResetPassword(request, env, origin) {
   const phone = asString(body.phone, 20).trim();
   const newPassword = asString(body.password, 64);
   if (!validPhone(phone)) return fail('请输入正确的手机号', 400, origin);
+  // 注：这是 ADMIN_KEY 管理员接口，允许管理演示账号（供后续更新演示数据用）；
+  //     限制只针对用户用 demo 密码登录后的自助修改，见 handlePasswordChange 等。
   if (!validPassword(newPassword)) return fail('密码需为 8-32 位', 400, origin);
   const user = await env.DB.prepare('SELECT 1 AS x FROM users WHERE phone = ?')
     .bind(phone)
@@ -1197,8 +1208,8 @@ async function handleAdminAccountApiKey(request, env, origin) {
   if (target.error) return target.error;
   const action = asString(body.action, 20).trim();
   const acc = target.account;
-  if (action === 'rotate') return handleApiKeyRotate(env, acc, origin);
-  if (action === 'port') return handleApiKeyPort(fakeReq(body), env, acc, origin);
+  if (action === 'rotate') return handleApiKeyRotate(env, acc, origin, true); // 管理员可管理演示账号
+  if (action === 'port') return handleApiKeyPort(fakeReq(body), env, acc, origin, true);
   if (action === 'clear') {
     await env.DB.prepare('DELETE FROM account_keys WHERE phone = ?').bind(target.phone).run();
     return jsonRes({ phone: target.phone, cleared: true }, 200, origin);
@@ -1435,6 +1446,7 @@ async function handleProfileUpdate(request, env, identity, origin) {
   if (!body) return fail('请求内容格式错误', 400, origin);
   const name = asString(body.name, 32).trim() || '账本用户';
   const phone = guard.phone;
+  if (isDemoPhone(phone)) return fail(DEMO_LOCKED_MSG, 403, origin);
   await env.DB.prepare('UPDATE users SET name = ? WHERE phone = ?').bind(name, phone).run();
   return jsonRes({ phone, name, token: await reissueToken(env, phone, name) }, 200, origin);
 }
@@ -1446,6 +1458,7 @@ async function handlePasswordChange(request, env, identity, origin) {
   const body = await readJson(request);
   if (!body) return fail('请求内容格式错误', 400, origin);
   const phone = guard.phone;
+  if (isDemoPhone(phone)) return fail(DEMO_LOCKED_MSG, 403, origin);
   const oldPassword = asString(body.oldPassword, 64);
   const newPassword = asString(body.newPassword, 64);
   if (!validPassword(newPassword)) return fail('新密码需为 8-32 位', 400, origin);
@@ -1468,6 +1481,7 @@ async function handlePhoneChange(request, env, identity, origin) {
   const body = await readJson(request);
   if (!body) return fail('请求内容格式错误', 400, origin);
   const phone = guard.phone;
+  if (isDemoPhone(phone)) return fail(DEMO_LOCKED_MSG, 403, origin);
   const newPhone = asString(body.newPhone, 20).trim();
   const password = asString(body.password, 64);
   if (!validPhone(newPhone)) return fail('请输入正确的手机号', 400, origin);
@@ -2042,9 +2056,45 @@ function csvEscape(value) {
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
+function xmlEscape(value) {
+  const text = String(value === null || value === undefined ? '' : value);
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+/** 生成 SpreadsheetML 2003（Excel 原生 .xls，纯 XML 零依赖）。
+ *  Excel/WPS 双击即以真正表格打开，含表头样式，金额等纯数字列为数值类型可参与计算。 */
+function buildSpreadsheetML(rows, sheetName) {
+  const safeName = String(sheetName || '账本').replace(/[\\/?*\[\]:]/g, '_').slice(0, 31) || '账本';
+  const lines = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<?mso-application progid="Excel.Sheet"?>',
+    '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">',
+    '<Styles>',
+    '<Style ss:ID="Header"><Font ss:Bold="1"/><Interior ss:Color="#E7F2EA" ss:Pattern="Solid"/></Style>',
+    '<Style ss:ID="Num"><NumberFormat ss:Format="0.00"/></Style>',
+    '</Styles>',
+    `<Worksheet ss:Name="${xmlEscape(safeName)}"><Table>`,
+  ];
+  rows.forEach((row, ri) => {
+    lines.push('<Row>');
+    row.forEach((cell) => {
+      const text = String(cell === null || cell === undefined ? '' : cell);
+      const isNum = ri > 0 && /^-?\d+(\.\d+)?$/.test(text);
+      if (isNum) lines.push(`<Cell ss:StyleID="Num"><Data ss:Type="Number">${text}</Data></Cell>`);
+      else if (ri === 0) lines.push(`<Cell ss:StyleID="Header"><Data ss:Type="String">${xmlEscape(text)}</Data></Cell>`);
+      else lines.push(`<Cell><Data ss:Type="String">${xmlEscape(text)}</Data></Cell>`);
+    });
+    lines.push('</Row>');
+  });
+  lines.push('</Table></Worksheet></Workbook>');
+  return lines.join('\r\n');
+}
+
 async function handleExportCsv(request, env, account, origin) {
   const url = new URL(request.url);
   const kind = url.searchParams.get('type') || url.searchParams.get('kind') || 'gifts';
+  const format = (url.searchParams.get('format') || url.searchParams.get('fmt') || 'csv').toLowerCase();
   const { events, gifts } = await loadAccountData(env, account);
   const eventById = new Map(events.map((e) => [e.id, e]));
 
@@ -2091,6 +2141,21 @@ async function handleExportCsv(request, env, account, origin) {
 
   const csv = '﻿' + rows.map((row) => row.map(csvEscape).join(',')).join('\r\n');
   const disposition = `attachment; filename="export-${kind}.csv"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+  // format=xls → Excel 原生表格（SpreadsheetML）；默认仍是 CSV，向后兼容
+  if (format === 'xls' || format === 'xlsx') {
+    const xlsName = filename.replace(/\.csv$/, '.xls');
+    const xls = buildSpreadsheetML(rows, xlsName.replace(/\.xls$/, ''));
+    const xlsDisp = `attachment; filename="export-${kind}.xls"; filename*=UTF-8''${encodeURIComponent(xlsName)}`;
+    return new Response(xls, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/vnd.ms-excel; charset=utf-8',
+        'Content-Disposition': xlsDisp,
+        'Cache-Control': 'no-store',
+        ...corsHeaders(origin),
+      },
+    });
+  }
   return new Response(csv, {
     status: 200,
     headers: {
@@ -2411,7 +2476,8 @@ async function handleApiKeyGet(env, account, origin) {
   return jsonRes({ configured, key, apiPort: port, createdAt }, 200, origin);
 }
 
-async function handleApiKeyRotate(env, account, origin) {
+async function handleApiKeyRotate(env, account, origin, allowDemo) {
+  if (!allowDemo && isDemoPhone(accountPhone(account))) return fail(DEMO_LOCKED_MSG, 403, origin);
   const bytes = crypto.getRandomValues(new Uint8Array(24));
   const key = `gl_${[...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
 
@@ -2432,7 +2498,8 @@ async function handleApiKeyRotate(env, account, origin) {
   return jsonRes({ key }, 200, origin);
 }
 
-async function handleApiKeyPort(request, env, account, origin) {
+async function handleApiKeyPort(request, env, account, origin, allowDemo) {
+  if (!allowDemo && isDemoPhone(accountPhone(account))) return fail(DEMO_LOCKED_MSG, 403, origin);
   const body = await readJson(request);
   if (!body) return fail('请求内容格式错误', 400, origin);
   const raw = asString(body.port, 10).trim();
@@ -2816,6 +2883,9 @@ async function bootDemo(env) {
   demoBooted = true;
   try { await ensureSchema(env.DB); } catch { /* 建表失败交给后续自愈 */ }
   await ensureDemoData(env);
+  // 固定演示账号的接口密钥：无论是否本次 seed，每个 isolate 启动时都幂等校正一次，
+  // 保证老版本 seed 已存在、或被人轮换过的 demo 账号都回到固定 key + 443。
+  try { await ensureDemoApiKey(env); } catch { /* best-effort */ }
 }
 
 export default {

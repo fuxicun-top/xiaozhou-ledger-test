@@ -305,7 +305,17 @@
             ".fg-btn{width:100%;padding:9px 0;background:#8c6d4f;color:#fff;border:none;border-radius:9px;font-size:13px;cursor:pointer}" +
             ".fg-btn:disabled{opacity:.6;cursor:default}" +
             ".fg-msg{font-size:12px;margin-top:8px;min-height:16px;line-height:1.5}" +
-            ".fg-msg.ok{color:#2e7d32}.fg-msg.err{color:#c0392b}";
+            ".fg-msg.ok{color:#2e7d32}.fg-msg.err{color:#c0392b}" +
+            /* 头像：主题浅绿底 + 红字，提升对比度（覆盖压缩 CSS 的灰绿底灰绿字） */
+            ".topbar .avatar.small{background:#e7f2ea!important;color:#326d56!important}" +
+            /* 危险按钮（确认弹窗的确认/删除、头像下拉的退出账号）：浅绿底红字 */
+            ".button.danger,.acct-menu-item.danger{background:#e7f2ea!important;color:#c0392b!important}" +
+            ".button.danger:hover{background:#d8ebe0!important}" +
+            /* 通用提示浮层（demo 账号操作受限时用） */
+            "#__toast{position:fixed;left:50%;top:24px;transform:translateX(-50%);z-index:10002;background:#fff;border:1px solid #e5ddd3;border-left:4px solid #b88273;box-shadow:0 8px 28px rgba(0,0,0,.14);border-radius:10px;padding:12px 18px;font-size:13px;color:#3a342e;max-width:90vw;display:none}" +
+            /* 忘记密码弹窗：邮箱与复制按钮同一行，缩小间隔 */
+            ".fg-email-row{display:flex;align-items:center;gap:8px;margin:8px 0}" +
+            ".fg-email-row .fg-email{margin:0;flex:1;min-width:0}";
           document.head.appendChild(style);
 
           var overlay = document.createElement("div");
@@ -327,6 +337,43 @@
             '<div class="lg-links" id="lg-links"><a id="lg-forgot">忘记密码？</a><a id="lg-unbind" style="display:none;color:#c0392b">退出登录</a></div>' +
             "</div>";
           document.body.appendChild(overlay);
+
+          /* ---------- 通用提示浮层 ---------- */
+          var toastEl = document.createElement("div");
+          toastEl.id = "__toast";
+          document.body.appendChild(toastEl);
+          var toastTimer = null;
+          function showToast(msg) {
+            toastEl.textContent = msg || "";
+            toastEl.style.display = "block";
+            if (toastTimer) clearTimeout(toastTimer);
+            toastTimer = setTimeout(function () { toastEl.style.display = "none"; }, 4000);
+          }
+
+          /* ---------- 拦截更换密钥请求：后端拒绝(demo账号)时弹出提示 ----------
+           * 压缩 React bundle 里 Sb()(rotate) 的 .catch 是空的，吞掉了错误，
+           * 而改端口(Cb)会把 e.message 用 toast 显示。这里补上 rotate 的错误提示。 */
+          (function () {
+            var origFetch = window.fetch;
+            window.fetch = function (input, init) {
+              var url = (typeof input === "string") ? input : (input && input.url ? input.url : "");
+              // React 用相对路径 api/apikey/rotate 请求，也可能带前导斜杠，两种都匹配
+              var isRotate = /(\/|^)api\/apikey\/rotate\b/.test(url);
+              if (!isRotate) return origFetch.apply(this, arguments);
+              return origFetch.apply(this, arguments).then(function (res) {
+                if (res && res.status === 403) {
+                  // 克隆响应读取错误文案（原响应仍要还给调用方）
+                  var clone = res.clone ? res.clone() : null;
+                  (clone ? clone.json() : Promise.resolve({})).then(function (d) {
+                    showToast((d && d.error) || "演示账号为公开体验账号，不允许修改账号信息与接口密钥（账本记录可正常增删改）");
+                  }).catch(function () {
+                    showToast("演示账号为公开体验账号，不允许修改账号信息与接口密钥（账本记录可正常增删改）");
+                  });
+                }
+                return res;
+              });
+            };
+          })();
 
           /* ---------- 个人中心面板 ---------- */
           var pfOverlay = document.createElement("div");
@@ -366,8 +413,8 @@
             '<p class="fg-sub">通过以下方式找回账号：</p>' +
             '<div class="fg-box" id="fg-email-box" style="display:none">' +
               '<div>请把你的手机号发给管理员邮箱：</div>' +
-              '<div class="fg-email" id="fg-email">—</div>' +
-              '<button class="fg-copy" id="fg-copy">复制邮箱</button>' +
+              '<div class="fg-email-row"><div class="fg-email" id="fg-email">—</div>' +
+              '<button class="fg-copy" id="fg-copy">复制邮箱</button></div>' +
               '<div style="margin-top:10px;color:#8a8178">或直接向下方提交「密码重置申请」，管理员看到后会为你重置密码。</div>' +
             '</div>' +
             '<div class="fg-field"><label>你的手机号</label><input id="fg-phone" inputmode="numeric" maxlength="20" placeholder="注册时用的手机号" autocomplete="off"></div>' +
@@ -710,21 +757,28 @@
             { type: "people", label: "往来汇总" },
           ];
 
-          function onStatsPage() {
-            try { return location.pathname.replace(/\/+$/, "") === "/stats"; }
-            catch (e) { return false; }
+          function onPage(name) {
+            try {
+              // 前端是 hash 路由（URL 形如 /#/stats），必须读 location.hash；
+              // 同时兼容 history 模式的 pathname，两种都支持。
+              var hash = String(location.hash || "").replace(/^#/, "").split("?")[0].replace(/\/+$/, "");
+              var path = String(location.pathname || "").replace(/\/+$/, "");
+              return hash === "/" + name || (!location.hash && path === "/" + name);
+            } catch (e) { return false; }
           }
+          function onStatsPage() { return onPage("stats"); }
+          function onContactsPage() { return onPage("contacts"); }
 
-          // 找到统计页的图表区（section.charts-grid），把导出卡片插到它前面
-          function findChartsGrid() {
-            var grids = document.querySelectorAll("section.charts-grid");
-            return grids.length ? grids[0] : null;
+          // 找到统计页收支明细表格的分页条（.table-footer），导出卡片插到它下面
+          function findStatsFooter() {
+            var footers = document.querySelectorAll(".table-footer");
+            return footers.length ? footers[footers.length - 1] : null;
           }
 
           function downloadCsv(kind) {
             var jwt = getAuthJwt();
             if (!jwt) { openPanel(); return; }
-            fetch(API_BASE + "/api/export/csv?type=" + encodeURIComponent(kind), {
+            fetch(API_BASE + "/api/export/csv?type=" + encodeURIComponent(kind) + "&format=xls", {
               headers: { Authorization: "Bearer " + jwt },
             })
               .then(function (r) {
@@ -741,8 +795,8 @@
                 var url = URL.createObjectURL(blob);
                 var a = document.createElement("a");
                 a.href = url;
-                var names = { gifts: "礼金明细.csv", events: "活动列表.csv", people: "往来汇总.csv" };
-                a.download = names[kind] || "账本导出.csv";
+                var names = { gifts: "礼金明细.xls", events: "活动列表.xls", people: "往来汇总.xls" };
+                a.download = names[kind] || "账本导出.xls";
                 document.body.appendChild(a);
                 a.click();
                 setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 1000);
@@ -756,16 +810,16 @@
               if (existing) existing.remove(); // 离开统计页时移掉
               return;
             }
-            var grid = findChartsGrid();
-            if (!grid) return;
+            var footer = findStatsFooter();
+            if (!footer) return;
             var card = existing;
             if (!card) {
               card = document.createElement("section");
               card.id = "__csvExport";
               card.className = "panel csv-export";
-              card.style.cssText = "margin-bottom:16px;padding:16px 18px";
+              card.style.cssText = "margin-top:16px;padding:16px 18px";
               var html = '<h2 style="margin:0 0 4px;font-size:16px">导出账本</h2>' +
-                '<p style="margin:0 0 12px;font-size:12px;color:#8a8178">把账本下载为 CSV，可用 Excel / WPS 打开继续分析</p>' +
+                '<p style="margin:0 0 12px;font-size:12px;color:#8a8178">导出 Excel 表格（.xls），可用 Excel / WPS 打开继续分析</p>' +
                 '<div style="display:flex;gap:10px;flex-wrap:wrap">';
               CSV_KINDS.forEach(function (k) {
                 html += '<button type="button" data-kind="' + k.type + '" style="padding:8px 16px;background:#f3efe9;color:#6b625a;border:none;border-radius:9px;font-size:13px;cursor:pointer">' + k.label + '</button>';
@@ -778,9 +832,90 @@
                 if (b) downloadCsv(b.getAttribute("data-kind"));
               });
             }
-            if (card.parentNode !== grid.parentNode || card.nextElementSibling !== grid) {
-              grid.parentNode.insertBefore(card, grid);
+            // 插到分页条下面（footer 的下一个兄弟之前）
+            if (card.parentNode !== footer.parentNode || card.previousElementSibling !== footer) {
+              footer.parentNode.insertBefore(card, footer.nextSibling);
             }
+          }
+
+          // ---- 往来联系人页：分页限制（按屏幕自适应，避免固定条数在小屏太长/大屏太空）----
+          // 压缩 React 的联系人页用 o.map 一次渲染全部联系人，无分页。
+          // 这里用 DOM 注入分页条 + 按页隐藏卡片（只改 style.display，不动 React 数据）。
+          // 每页条数 = 网格实际列数 × CONTACTS_ROWS 行：手机1列7条、平板2列14、桌面3列21，
+          // 各屏幕每页都约 7 行、视觉密度一致；窗口缩放时自动重算。
+          var CONTACTS_ROWS = 7;
+          var contactsPage = 1;
+
+          function contactsPerPage(grid) {
+            var cols = 1;
+            try {
+              var tpl = window.getComputedStyle(grid).gridTemplateColumns || "";
+              var parts = tpl.trim().split(/\s+/).filter(Boolean);
+              if (parts.length) cols = parts.length;
+            } catch (e) {}
+            return Math.max(1, cols) * CONTACTS_ROWS;
+          }
+
+          function applyContactPagination() {
+            var grid = document.querySelector(".contact-grid");
+            if (!grid) return;
+            var cards = grid.querySelectorAll(".contact-card");
+            var total = cards.length;
+            var perPage = contactsPerPage(grid);
+            var pages = Math.max(1, Math.ceil(total / perPage));
+            if (contactsPage > pages) contactsPage = pages;
+            var start = (contactsPage - 1) * perPage;
+            var end = Math.min(start + perPage, total);
+            for (var i = 0; i < cards.length; i++) {
+              var want = (i >= start && i < end) ? "" : "none";
+              if (cards[i].style.display !== want) cards[i].style.display = want; // 只在变化时改，避免 observer 递归
+            }
+            var pager = document.getElementById("__contactsPager");
+            if (pager) {
+              pager.style.display = total > perPage ? "flex" : "none";
+              var info = pager.querySelector("[data-role=info]");
+              var txt = "第 " + contactsPage + " / " + pages + " 页 · 共 " + total + " 位联系人";
+              if (info && info.textContent !== txt) info.textContent = txt;
+              var prev = pager.querySelector("[data-act=prev]");
+              var next = pager.querySelector("[data-act=next]");
+              if (prev) prev.disabled = contactsPage <= 1;
+              if (next) next.disabled = contactsPage >= pages;
+            }
+          }
+
+          function mountContactsPagination() {
+            var existing = document.getElementById("__contactsPager");
+            if (!onContactsPage()) {
+              if (existing) existing.remove();
+              contactsPage = 1;
+              return;
+            }
+            var grid = document.querySelector(".contact-grid");
+            if (!grid) return;
+            if (!existing) {
+              var pager = document.createElement("div");
+              pager.id = "__contactsPager";
+              pager.style.cssText = "display:none;align-items:center;justify-content:center;gap:14px;padding:12px 0 4px;font-size:13px;color:#6b625a";
+              pager.innerHTML =
+                '<button type="button" data-act="prev" style="padding:6px 14px;border:1px solid #e5ddd3;background:#fff;border-radius:8px;cursor:pointer;color:#6b625a">上一页</button>' +
+                '<span data-role="info"></span>' +
+                '<button type="button" data-act="next" style="padding:6px 14px;border:1px solid #e5ddd3;background:#fff;border-radius:8px;cursor:pointer;color:#6b625a">下一页</button>';
+              pager.addEventListener("click", function (ev) {
+                var b = ev.target && ev.target.closest ? ev.target.closest("button[data-act]") : null;
+                if (!b) return;
+                var total = grid.querySelectorAll(".contact-card").length;
+                var pages = Math.max(1, Math.ceil(total / contactsPerPage(grid)));
+                if (b.getAttribute("data-act") === "prev" && contactsPage > 1) contactsPage--;
+                else if (b.getAttribute("data-act") === "next" && contactsPage < pages) contactsPage++;
+                applyContactPagination();
+              });
+              // 插到联系人网格下面（内容底部）
+              grid.parentNode.insertBefore(pager, grid.nextSibling);
+            } else if (existing.previousElementSibling !== grid) {
+              // React 重渲染或从旧版本升级（原在网格上方）时，校正到网格下方
+              grid.parentNode.insertBefore(existing, grid.nextSibling);
+            }
+            applyContactPagination();
           }
 
           // 右上角头像（.avatar.small）：未登录点开登录注册，已登录点开账号下拉菜单。
@@ -812,6 +947,7 @@
               mountButton();
               bindAvatar();
               mountCsvExport();
+              mountContactsPagination();
             } finally {
               if (mo) mo.observe(appRoot, { childList: true, subtree: true });
             }
@@ -822,6 +958,16 @@
           var start = function () {
             refresh();
             setInterval(refresh, 1500);
+            // 窗口缩放：联系人页按新列数重算每页条数（节流 120ms）
+            var resizeTimer = null;
+            window.addEventListener("resize", function () {
+              if (!onContactsPage()) return;
+              if (resizeTimer) clearTimeout(resizeTimer);
+              resizeTimer = setTimeout(function () {
+                contactsPage = 1;
+                applyContactPagination();
+              }, 120);
+            });
           };
 
           if (document.readyState === "loading") {
