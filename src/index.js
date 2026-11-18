@@ -2056,9 +2056,45 @@ function csvEscape(value) {
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
+function xmlEscape(value) {
+  const text = String(value === null || value === undefined ? '' : value);
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+/** 生成 SpreadsheetML 2003（Excel 原生 .xls，纯 XML 零依赖）。
+ *  Excel/WPS 双击即以真正表格打开，含表头样式，金额等纯数字列为数值类型可参与计算。 */
+function buildSpreadsheetML(rows, sheetName) {
+  const safeName = String(sheetName || '账本').replace(/[\\/?*\[\]:]/g, '_').slice(0, 31) || '账本';
+  const lines = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<?mso-application progid="Excel.Sheet"?>',
+    '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">',
+    '<Styles>',
+    '<Style ss:ID="Header"><Font ss:Bold="1"/><Interior ss:Color="#E7F2EA" ss:Pattern="Solid"/></Style>',
+    '<Style ss:ID="Num"><NumberFormat ss:Format="0.00"/></Style>',
+    '</Styles>',
+    `<Worksheet ss:Name="${xmlEscape(safeName)}"><Table>`,
+  ];
+  rows.forEach((row, ri) => {
+    lines.push('<Row>');
+    row.forEach((cell) => {
+      const text = String(cell === null || cell === undefined ? '' : cell);
+      const isNum = ri > 0 && /^-?\d+(\.\d+)?$/.test(text);
+      if (isNum) lines.push(`<Cell ss:StyleID="Num"><Data ss:Type="Number">${text}</Data></Cell>`);
+      else if (ri === 0) lines.push(`<Cell ss:StyleID="Header"><Data ss:Type="String">${xmlEscape(text)}</Data></Cell>`);
+      else lines.push(`<Cell><Data ss:Type="String">${xmlEscape(text)}</Data></Cell>`);
+    });
+    lines.push('</Row>');
+  });
+  lines.push('</Table></Worksheet></Workbook>');
+  return lines.join('\r\n');
+}
+
 async function handleExportCsv(request, env, account, origin) {
   const url = new URL(request.url);
   const kind = url.searchParams.get('type') || url.searchParams.get('kind') || 'gifts';
+  const format = (url.searchParams.get('format') || url.searchParams.get('fmt') || 'csv').toLowerCase();
   const { events, gifts } = await loadAccountData(env, account);
   const eventById = new Map(events.map((e) => [e.id, e]));
 
@@ -2105,6 +2141,21 @@ async function handleExportCsv(request, env, account, origin) {
 
   const csv = '﻿' + rows.map((row) => row.map(csvEscape).join(',')).join('\r\n');
   const disposition = `attachment; filename="export-${kind}.csv"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+  // format=xls → Excel 原生表格（SpreadsheetML）；默认仍是 CSV，向后兼容
+  if (format === 'xls' || format === 'xlsx') {
+    const xlsName = filename.replace(/\.csv$/, '.xls');
+    const xls = buildSpreadsheetML(rows, xlsName.replace(/\.xls$/, ''));
+    const xlsDisp = `attachment; filename="export-${kind}.xls"; filename*=UTF-8''${encodeURIComponent(xlsName)}`;
+    return new Response(xls, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/vnd.ms-excel; charset=utf-8',
+        'Content-Disposition': xlsDisp,
+        'Cache-Control': 'no-store',
+        ...corsHeaders(origin),
+      },
+    });
+  }
   return new Response(csv, {
     status: 200,
     headers: {
