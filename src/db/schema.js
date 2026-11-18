@@ -153,13 +153,17 @@ const LEGACY_MIGRATIONS = [
  * 幂等地确保数据库结构完整。
  * D1 的 batch() 只接受 D1PreparedStatement（本地 miniflare 对字符串数组直接抛
  * ZodError），因此先把 DDL 全部 prepare 成语句对象再 batch，原子执行；
- * 旧库列迁移用 exec 逐条尝试（已存在则跳过）。
+ * 旧库列迁移逐条 prepare().run() 尝试（列已存在会报错，跳过即可）。
+ *
+ * 注意：早期用 db.exec() 执行 ALTER，在部分 D1 运行时上静默失败（不抛错也不补列），
+ * 被空 catch 吞掉后导致旧库列永远补不上、写入一直报 no such column（500）。
+ * 改用 prepare().run() 是 D1 官方推荐且行为一致的方式。
  */
 export async function ensureSchema(db) {
   await db.batch(DDL.map((stmt) => db.prepare(stmt)));
   for (const stmt of LEGACY_MIGRATIONS) {
     try {
-      await db.exec(stmt);
+      await db.prepare(stmt).run();
     } catch {
       /* 列已存在等错误：跳过 */
     }
@@ -176,9 +180,11 @@ export async function isDbReady(db) {
   }
 }
 
-/** 判断错误是否为"数据库缺表/缺列/缺索引"（触发 ensureSchema 自愈重建/补列）。 */
+/** 判断错误是否为"数据库缺表/缺列/缺索引"（触发 ensureSchema 自愈重建/补列）。
+ *  兼容两种报错文案：原生 SQLite 的 "no such column"，以及 D1 运行时的
+ *  "table xxx has no column named yyy"。后者曾是旧库缺列不自愈、写入一直 500 的根因。 */
 export function isNoSchemaError(e) {
   if (!e) return false;
   if (String(e.code) === '1101') return true;
-  return /no such table|no such index|no such column|1101/i.test(e.message || '');
+  return /no such table|no such index|no such column|has no column named|1101/i.test(e.message || '');
 }
