@@ -30,7 +30,7 @@
 - **手机号 + 密码账号**：注册后 7 天免登录，任意设备登录同一手机号看到同一本账。密码以加盐哈希存在你自己的 D1，服务端不存明文。
 - **游客模式**：不注册也能记，数据存在本机浏览器；注册时自动并入账号。
 - **微信小程序 / 第三方客户端**：设置页生成接口密钥（`X-Api-Key`），与网页端读写同一本账。
-- **统计分析**：收支总览、往来联系人、年度报告、CSV 导出。
+- **统计分析**：收支总览、往来联系人、年度报告、账本导出（Excel 表格 `.xls`，兼容 CSV）。
 - **AI 记账**：配置自己的大模型 API Key，用自然语言批量记一笔（支持浏览器直连兜底应对限流）。
 - **个人中心**：头像菜单里改昵称、改密码、换绑定手机号（账本数据自动迁移）。
 - **意见反馈 & 忘记密码**：账本内「写反馈」直达开发者；登录页「忘记密码」可一键发信给管理员邮箱、或提交**站内重置申请**（无需登录），由管理员在后台处理。
@@ -348,7 +348,7 @@ curl -X POST https://你的域名/api/admin/purge-account \
 | GET | `/api/overview` | 总览统计 |
 | GET | `/api/people` | 联系人汇总 |
 | GET | `/api/report/yearly?year=` | 年度报告 |
-| GET | `/api/export/csv?type=` | CSV 导出 |
+| GET | `/api/export/csv?type=&format=` | 账本导出：`type=gifts/events/people`；`format=xls` 导出 Excel 表格（`.xls`，SpreadsheetML，网页「导出账本」即用此项），默认 `format=csv` 导出 CSV（向后兼容） |
 | GET/POST | `/api/ai/config`、`POST /api/ai/parse` | AI 配置 / 解析（自带模型 Key） |
 | GET/POST | `/api/export/backup`、`/api/import/backup` | 用户级全栈备份（明文，无需密钥） |
 | POST | `/api/feedback` | 意见反馈（账本「写反馈」，存 D1） |
